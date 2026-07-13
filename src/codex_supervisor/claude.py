@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from typing import Protocol
 
 from .models import Decision, DecisionKind, TaskContext
+from .session import SessionAdapter
 
 SYSTEM_PROMPT = Path(__file__).with_name("supervisor_prompt.md").read_text(encoding="utf-8")
 
@@ -21,10 +21,6 @@ DECISION_SCHEMA = json.dumps({
 })
 
 
-class ClaudeSession(Protocol):
-    def decide(self, session_id: str | None, context: TaskContext, system_prompt: str) -> tuple[str, str]: ...
-
-
 def parse_decision(payload: str) -> Decision:
     try:
         value = json.loads(payload)
@@ -37,7 +33,7 @@ def parse_decision(payload: str) -> Decision:
 
 class ConservativeClaude:
     """Adapter boundary; no production Claude/Fable command is enabled by this project."""
-    def __init__(self, session: ClaudeSession):
+    def __init__(self, session: SessionAdapter):
         self.session = session
 
     def decide(self, session_id: str | None, context: TaskContext) -> tuple[str, Decision]:
@@ -50,7 +46,7 @@ class ConservativeClaude:
 class ClaudeCodeSession:
     """Verified local Claude Code/Fable CLI adapter with a persisted session."""
 
-    def __init__(self, command: str = "claude", model: str = "fable", timeout_seconds: float = 120.0):
+    def __init__(self, command: str, model: str, timeout_seconds: float = 120.0):
         self.command, self.model, self.timeout_seconds = command, model, timeout_seconds
 
     def decide(self, session_id: str | None, context: TaskContext, system_prompt: str) -> tuple[str, str]:
