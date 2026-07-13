@@ -55,17 +55,28 @@ class ScanResult:
 
 
 @dataclass(frozen=True)
+class DeliveryReceipt:
+    """A transport acknowledgement; unread-state clearance is confirmed separately."""
+
+    transport_accepted: bool
+    delivery_id: str | None = None
+
+
+@dataclass(frozen=True)
 class SupervisorConfig:
     host_id: str
     state_path: Path
     socket_path: Path
     shadow_mode: bool = True
     allow_replies: bool = False
-    canary_verified: bool = False
+    canary_evidence_id: str | None = None
+    inventory_identity: str | None = None
+    delivery_identity: str | None = None
+    delivery_confirmation_timeout_seconds: int = 60
     supervisor_thread_id: str | None = None
 
-    def mutation_allowed(self) -> bool:
-        return not self.shadow_mode and self.allow_replies and self.canary_verified
+    def mutation_requested(self) -> bool:
+        return not self.shadow_mode and self.allow_replies
 
 
 def text_from_item(item: Any) -> str | None:

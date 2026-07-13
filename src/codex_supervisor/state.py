@@ -28,6 +28,14 @@ class SupervisorState:
         CREATE TABLE IF NOT EXISTS supervisor_shadow_decisions (
           id INTEGER PRIMARY KEY AUTOINCREMENT, host_id TEXT NOT NULL, thread_id TEXT NOT NULL,
           decision TEXT NOT NULL, reason TEXT NOT NULL, reply TEXT, recorded_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS supervisor_canary_evidence (
+          evidence_id TEXT PRIMARY KEY, inventory_identity TEXT NOT NULL,
+          delivery_identity TEXT NOT NULL, recorded_at TEXT NOT NULL, revoked_at TEXT);
+        CREATE TABLE IF NOT EXISTS supervisor_delivery_claims (
+          host_id TEXT NOT NULL, thread_id TEXT NOT NULL, unread_at INTEGER NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('CLAIMED','AWAITING_CLEARANCE','CONFIRMED')),
+          claimed_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          PRIMARY KEY (host_id, thread_id, unread_at));
         """)
         self.db.commit()
 
@@ -46,14 +54,75 @@ class SupervisorState:
         self.db.commit()
         return cursor.rowcount == 1
 
-    def session_id(self) -> str | None:
-        row = self.db.execute("SELECT value FROM supervisor_settings WHERE key='claude_session_id'").fetchone()
+    @staticmethod
+    def _session_key(host_id: str, thread_id: str) -> str:
+        return f"claude_session_id:{host_id}:{thread_id}"
+
+    def session_id(self, host_id: str | None = None, thread_id: str | None = None) -> str | None:
+        key = "claude_session_id" if host_id is None or thread_id is None else self._session_key(host_id, thread_id)
+        row = self.db.execute("SELECT value FROM supervisor_settings WHERE key=?", (key,)).fetchone()
         return None if row is None else str(row[0])
 
-    def set_session_id(self, session_id: str) -> None:
+    def set_session_id(self, session_id: str, host_id: str | None = None, thread_id: str | None = None) -> None:
         if not session_id.strip():
             raise ValueError("supervisor session ID must be non-empty")
-        self.db.execute("INSERT INTO supervisor_settings(key,value) VALUES ('claude_session_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (session_id,))
+        key = "claude_session_id" if host_id is None or thread_id is None else self._session_key(host_id, thread_id)
+        self.db.execute("INSERT INTO supervisor_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, session_id))
+        self.db.commit()
+
+    def record_canary_evidence(self, evidence_id: str, inventory_identity: str, delivery_identity: str) -> None:
+        if not all(value.strip() for value in (evidence_id, inventory_identity, delivery_identity)):
+            raise ValueError("canary evidence and adapter identities must be non-empty")
+        self.db.execute(
+            "INSERT INTO supervisor_canary_evidence(evidence_id,inventory_identity,delivery_identity,recorded_at,revoked_at) VALUES (?,?,?,?,NULL) "
+            "ON CONFLICT(evidence_id) DO UPDATE SET inventory_identity=excluded.inventory_identity, delivery_identity=excluded.delivery_identity, recorded_at=excluded.recorded_at, revoked_at=NULL",
+            (evidence_id, inventory_identity, delivery_identity, datetime.now(UTC).isoformat()),
+        )
+        self.db.commit()
+
+    def canary_matches(self, evidence_id: str | None, inventory_identity: str | None, delivery_identity: str | None) -> bool:
+        if not all((evidence_id, inventory_identity, delivery_identity)):
+            return False
+        row = self.db.execute(
+            "SELECT 1 FROM supervisor_canary_evidence WHERE evidence_id=? AND inventory_identity=? AND delivery_identity=? AND revoked_at IS NULL",
+            (evidence_id, inventory_identity, delivery_identity),
+        ).fetchone()
+        return row is not None
+
+    def claim_delivery(self, host_id: str, thread_id: str, unread_at: int) -> bool:
+        now = datetime.now(UTC).isoformat()
+        cursor = self.db.execute(
+            "INSERT OR IGNORE INTO supervisor_delivery_claims(host_id,thread_id,unread_at,status,claimed_at,updated_at) VALUES (?,?,?,'CLAIMED',?,?)",
+            (host_id, thread_id, unread_at, now, now),
+        )
+        self.db.commit()
+        return cursor.rowcount == 1
+
+    def await_clearance(self, host_id: str, thread_id: str, unread_at: int) -> None:
+        self.db.execute(
+            "UPDATE supervisor_delivery_claims SET status='AWAITING_CLEARANCE', updated_at=? WHERE host_id=? AND thread_id=? AND unread_at=? AND status='CLAIMED'",
+            (datetime.now(UTC).isoformat(), host_id, thread_id, unread_at),
+        )
+        self.db.commit()
+
+    def delivery_claim(self, host_id: str, thread_id: str, unread_at: int) -> tuple[str, datetime] | None:
+        row = self.db.execute(
+            "SELECT status, updated_at FROM supervisor_delivery_claims WHERE host_id=? AND thread_id=? AND unread_at=?",
+            (host_id, thread_id, unread_at),
+        ).fetchone()
+        return None if row is None else (str(row[0]), datetime.fromisoformat(str(row[1])))
+
+    def reconcile_delivery_claims(self, observed_unread: set[tuple[str, str, int]], confirmation_timeout_seconds: int) -> None:
+        now = datetime.now(UTC)
+        rows = self.db.execute("SELECT host_id,thread_id,unread_at,status,updated_at FROM supervisor_delivery_claims WHERE status != 'CONFIRMED'").fetchall()
+        for host_id, thread_id, unread_at, status, updated_at in rows:
+            key = (str(host_id), str(thread_id), int(unread_at))
+            if key not in observed_unread:
+                self.db.execute("UPDATE supervisor_delivery_claims SET status='CONFIRMED', updated_at=? WHERE host_id=? AND thread_id=? AND unread_at=?", (now.isoformat(), *key))
+            elif status == "CLAIMED":
+                self.mark_human_review(key[0], key[1], "delivery claim interrupted before transport acknowledgement")
+            elif (now - datetime.fromisoformat(str(updated_at))).total_seconds() > confirmation_timeout_seconds:
+                self.mark_human_review(key[0], key[1], "reply transport acknowledged but unread result did not clear before confirmation timeout")
         self.db.commit()
 
     def record_shadow(self, host_id: str, thread_id: str, decision: str, reason: str, reply: str | None) -> None:
@@ -61,4 +130,4 @@ class SupervisorState:
         self.db.commit()
 
     def status(self) -> dict[str, int | str | None]:
-        return {"state_path": str(self.path), "session_id": self.session_id(), "human_review_count": self.db.execute("SELECT count(*) FROM human_review_tasks").fetchone()[0], "shadow_decision_count": self.db.execute("SELECT count(*) FROM supervisor_shadow_decisions").fetchone()[0]}
+        return {"state_path": str(self.path), "session_id": self.session_id(), "human_review_count": self.db.execute("SELECT count(*) FROM human_review_tasks").fetchone()[0], "shadow_decision_count": self.db.execute("SELECT count(*) FROM supervisor_shadow_decisions").fetchone()[0], "pending_delivery_count": self.db.execute("SELECT count(*) FROM supervisor_delivery_claims WHERE status != 'CONFIRMED'").fetchone()[0]}
