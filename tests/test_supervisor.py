@@ -3,12 +3,15 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+import sqlite3
 from pathlib import Path
 
 from codex_supervisor.cli import main
 from codex_supervisor.claude import ConservativeClaude, parse_decision
+from codex_supervisor.console import render_html
 from codex_supervisor.codex import AppServerClient
 from codex_supervisor.health import heartbeat_check, write_heartbeat
+from codex_supervisor.human_review_queue import render_markdown
 from codex_supervisor.models import DecisionKind, DeliveryReceipt, SupervisorConfig, TaskContext
 from codex_supervisor.scanner import UnreadScanner
 from codex_supervisor.service import SERVICE_NAME, render_units
@@ -81,6 +84,13 @@ class Tests(unittest.TestCase):
         sup, _, session = self.make([{"id":"a","hasUnreadTurn":True},{"id":"b","hasUnreadTurn":True}]); sup.run_once()
         self.assertEqual([x[0] for x in session.calls], [None, "persistent-1"]); self.assertEqual(self.state.session_id(), "persistent-1")
         self.assertTrue(all(call[2] for call in session.calls))
+
+    def test_supervisor_prompt_prefers_a_grounded_next_action_over_a_completion_claim(self):
+        sup, _, session = self.make([{"id":"a","hasUnreadTurn":True}]); sup.run_once()
+        prompt = session.calls[0][2]
+        self.assertIn("Be usefully opinionated", prompt)
+        self.assertIn("not an automatic stop", prompt)
+        self.assertEqual(prompt, (Path(__file__).parents[1] / "src/codex_supervisor/supervisor_prompt.md").read_text(encoding="utf-8"))
     def test_6_context_is_bounded(self):
         sup, _, session = self.make([{"id":"a","hasUnreadTurn":True}]); sup.run_once(); self.assertEqual(session.calls[0][1].latest_visible_result, "a2")
     def test_7_contract_only_allows_two_exact_shapes(self):
@@ -112,6 +122,40 @@ class Tests(unittest.TestCase):
     def test_15_restart_preserves_marker_and_session(self):
         self.state.mark_human_review("host", "a", "x"); self.state.set_session_id("p1"); self.state.close(); self.state = SupervisorState(self.path)
         self.assertTrue(self.state.is_human_review("host", "a")); self.assertEqual(self.state.session_id(), "p1")
+
+    def test_human_review_queue_preserves_title_snapshot_and_uses_thread_links(self):
+        sup, _, _ = self.make([{"id":"a", "name":"Review this task", "hasUnreadTurn":True}], '{"decision":"HUMAN_REVIEW_NEEDED","reason":"needs approval","reply":null}', shadow_mode=False)
+        sup.run_once()
+        row = self.state.human_review_queue()[0]
+        self.assertEqual(row["title"], "Review this task")
+        self.assertIn("`a`", render_markdown([row]))
+
+    def test_console_renders_read_only_queue_with_thread_link(self):
+        self.state.mark_human_review("host", "a", "needs human", "Task <one>")
+        page = render_html(self.path, Path("/missing.sock"))
+        self.assertIn("Fable human review queue", page)
+        self.assertIn("Task &lt;one&gt;", page)
+        self.assertIn("<code>a</code>", page)
+        self.assertIn("<code>a</code>", page)
+
+    def test_existing_human_review_rows_receive_blank_title_and_render_gracefully(self):
+        self.state.mark_human_review("host", "legacy", "older marker")
+        row = self.state.human_review_queue()[0]
+        self.assertEqual(row["title"], "")
+        self.assertIn("Untitled task", render_markdown([row]))
+
+    def test_queue_command_reads_legacy_state_without_migrating_it(self):
+        self.state.close()
+        self.path.unlink()
+        db = sqlite3.connect(self.path)
+        db.execute("CREATE TABLE human_review_tasks (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, disposition TEXT NOT NULL, reason TEXT NOT NULL, marked_at TEXT NOT NULL, PRIMARY KEY (host_id, thread_id))")
+        db.execute("INSERT INTO human_review_tasks VALUES ('host','legacy','HUMAN_REVIEW_NEEDED','reason with | delimiter','2026-07-13T00:00:00+00:00')")
+        db.commit(); db.close()
+        self.assertEqual(main(["human-review-queue", "--state-path", str(self.path)]), 0)
+        db = sqlite3.connect(self.path)
+        columns = {row[1] for row in db.execute("PRAGMA table_info(human_review_tasks)")}
+        db.close()
+        self.assertNotIn("title", columns)
 
     def test_idle_delivery_uses_resume_then_start_and_active_delivery_uses_steer(self):
         client = RecordingAppServer()

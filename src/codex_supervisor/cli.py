@@ -8,18 +8,20 @@ import time
 from pathlib import Path
 
 from .claude import ClaudeCodeSession, ConservativeClaude
+from .console import serve as serve_console
 from .codex import AppServerClient
 from .health import exit_code, report, write_heartbeat
+from .human_review_queue import render_markdown
 from .models import SupervisorConfig
 from .scanner import UnreadScanner
 from .service import default_unit_dir, install_units, service_status, uninstall_units
-from .state import SupervisorState, default_state_path
+from .state import SupervisorState, default_state_path, read_human_review_queue
 from .supervisor import Supervisor
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fail-closed Codex unread-task supervisor")
-    parser.add_argument("command", choices=("scan-once", "status", "canary-readiness", "reset-human-review", "doctor", "watchdog", "serve", "service-install", "service-status", "service-uninstall"))
+    parser.add_argument("command", choices=("scan-once", "status", "human-review-queue", "console", "canary-readiness", "reset-human-review", "doctor", "watchdog", "serve", "service-install", "service-status", "service-uninstall"))
     parser.add_argument("--state-path", type=Path, default=default_state_path())
     parser.add_argument("--socket-path", type=Path, default=Path.home() / ".codex/app-server-control/app-server-control.sock")
     parser.add_argument("--host-id", default="local")
@@ -33,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--program", type=Path, default=Path(sys.argv[0]).resolve())
     parser.add_argument("--fable-command", default="claude")
     parser.add_argument("--fable-model", default="fable")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--open-browser", action="store_true")
     args = parser.parse_args(argv)
     if args.interval <= 0 or args.grace < 0:
         parser.error("--interval must be positive and --grace cannot be negative")
@@ -96,6 +100,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         finally:
             state.close()
+
+    if args.command == "human-review-queue":
+        print(render_markdown(read_human_review_queue(args.state_path))); return 0
+
+    if args.command == "console":
+        serve_console(args.state_path, args.socket_path, args.port, args.open_browser); return 0
 
     state = SupervisorState(args.state_path)
     try:

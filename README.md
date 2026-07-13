@@ -83,6 +83,25 @@ View durable state:
 uv run codex-unread-supervisor status
 ```
 
+Render the read-only Human review queue, which is the same row shape intended
+for the later local console. It preserves the title snapshot captured when a
+marker is created; older markers without a snapshot display as `Untitled task`.
+
+```bash
+uv run codex-unread-supervisor human-review-queue
+```
+
+Each row includes the Codex task ID. Codex does not publish a supported desktop
+deep-link scheme, so use the task title/ID to locate it in the app.
+
+Open the same queue in a local browser:
+
+```bash
+./scripts/open-backlog.sh
+```
+
+It binds only to `http://127.0.0.1:8765/`, refreshes every 15 seconds, and is read-only.
+
 An operator can explicitly re-enroll a task after resolving it:
 
 ```bash

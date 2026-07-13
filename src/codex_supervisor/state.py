@@ -11,6 +11,29 @@ def default_state_path() -> Path:
     return root / "demo-agent-supervisor" / "state.sqlite3"
 
 
+def read_human_review_queue(path: str | Path) -> list[dict[str, str]]:
+    """Read human-review rows without creating or migrating supervisor state."""
+    state_path = Path(path)
+    if not state_path.exists():
+        return []
+    db = sqlite3.connect(f"file:{state_path}?mode=ro", uri=True)
+    try:
+        columns = {str(row[1]) for row in db.execute("PRAGMA table_info(human_review_tasks)")}
+        if "title" in columns:
+            title = "title"
+        else:
+            title = "'' AS title"
+        rows = db.execute(
+            f"SELECT host_id,thread_id,{title},reason,marked_at FROM human_review_tasks ORDER BY marked_at DESC"
+        ).fetchall()
+        return [
+            {"host_id": str(host_id), "thread_id": str(thread_id), "title": str(row_title), "reason": str(reason), "marked_at": str(marked_at)}
+            for host_id, thread_id, row_title, reason, marked_at in rows
+        ]
+    finally:
+        db.close()
+
+
 class SupervisorState:
     """Durable terminal markers, session ID, and shadow-mode audit records."""
 
@@ -23,7 +46,8 @@ class SupervisorState:
         CREATE TABLE IF NOT EXISTS human_review_tasks (
           host_id TEXT NOT NULL, thread_id TEXT NOT NULL,
           disposition TEXT NOT NULL CHECK (disposition = 'HUMAN_REVIEW_NEEDED'),
-          reason TEXT NOT NULL, marked_at TEXT NOT NULL, PRIMARY KEY (host_id, thread_id));
+          reason TEXT NOT NULL, marked_at TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (host_id, thread_id));
         CREATE TABLE IF NOT EXISTS supervisor_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS supervisor_shadow_decisions (
           id INTEGER PRIMARY KEY AUTOINCREMENT, host_id TEXT NOT NULL, thread_id TEXT NOT NULL,
@@ -37,6 +61,9 @@ class SupervisorState:
           claimed_at TEXT NOT NULL, updated_at TEXT NOT NULL,
           PRIMARY KEY (host_id, thread_id, unread_at));
         """)
+        columns = {str(row[1]) for row in self.db.execute("PRAGMA table_info(human_review_tasks)")}
+        if "title" not in columns:
+            self.db.execute("ALTER TABLE human_review_tasks ADD COLUMN title TEXT NOT NULL DEFAULT ''")
         self.db.commit()
 
     def close(self) -> None:
@@ -45,9 +72,17 @@ class SupervisorState:
     def is_human_review(self, host_id: str, thread_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM human_review_tasks WHERE host_id=? AND thread_id=?", (host_id, thread_id)).fetchone() is not None
 
-    def mark_human_review(self, host_id: str, thread_id: str, reason: str) -> None:
-        self.db.execute("INSERT OR IGNORE INTO human_review_tasks (host_id,thread_id,disposition,reason,marked_at) VALUES (?,?,'HUMAN_REVIEW_NEEDED',?,?)", (host_id, thread_id, reason, datetime.now(UTC).isoformat()))
+    def mark_human_review(self, host_id: str, thread_id: str, reason: str, title: str = "") -> None:
+        self.db.execute(
+            "INSERT INTO human_review_tasks (host_id,thread_id,disposition,reason,marked_at,title) VALUES (?,?,'HUMAN_REVIEW_NEEDED',?,?,?) "
+            "ON CONFLICT(host_id,thread_id) DO UPDATE SET title=excluded.title "
+            "WHERE human_review_tasks.title='' AND excluded.title != ''",
+            (host_id, thread_id, reason, datetime.now(UTC).isoformat(), title.strip()),
+        )
         self.db.commit()
+
+    def human_review_queue(self) -> list[dict[str, str]]:
+        return read_human_review_queue(self.path)
 
     def reset_human_review(self, host_id: str, thread_id: str) -> bool:
         cursor = self.db.execute("DELETE FROM human_review_tasks WHERE host_id=? AND thread_id=?", (host_id, thread_id))
@@ -112,7 +147,7 @@ class SupervisorState:
         ).fetchone()
         return None if row is None else (str(row[0]), datetime.fromisoformat(str(row[1])))
 
-    def reconcile_delivery_claims(self, observed_unread: set[tuple[str, str, int]], confirmation_timeout_seconds: int) -> None:
+    def reconcile_delivery_claims(self, observed_unread: dict[tuple[str, str, int], str], confirmation_timeout_seconds: int) -> None:
         now = datetime.now(UTC)
         rows = self.db.execute("SELECT host_id,thread_id,unread_at,status,updated_at FROM supervisor_delivery_claims WHERE status != 'CONFIRMED'").fetchall()
         for host_id, thread_id, unread_at, status, updated_at in rows:
@@ -120,9 +155,9 @@ class SupervisorState:
             if key not in observed_unread:
                 self.db.execute("UPDATE supervisor_delivery_claims SET status='CONFIRMED', updated_at=? WHERE host_id=? AND thread_id=? AND unread_at=?", (now.isoformat(), *key))
             elif status == "CLAIMED":
-                self.mark_human_review(key[0], key[1], "delivery claim interrupted before transport acknowledgement")
+                self.mark_human_review(key[0], key[1], "delivery claim interrupted before transport acknowledgement", observed_unread[key])
             elif (now - datetime.fromisoformat(str(updated_at))).total_seconds() > confirmation_timeout_seconds:
-                self.mark_human_review(key[0], key[1], "reply transport acknowledged but unread result did not clear before confirmation timeout")
+                self.mark_human_review(key[0], key[1], "reply transport acknowledged but unread result did not clear before confirmation timeout", observed_unread[key])
         self.db.commit()
 
     def record_shadow(self, host_id: str, thread_id: str, decision: str, reason: str, reply: str | None) -> None:

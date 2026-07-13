@@ -32,20 +32,23 @@ class AppServerClient:
 
     def _connect(self) -> socket.socket:
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.settimeout(self.timeout_seconds)
-        connection.connect(self.socket_path)
-        key = base64.b64encode(os.urandom(16)).decode()
-        request = (
-            "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
-            "Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
-            f"Sec-WebSocket-Key: {key}\r\n\r\n"
-        )
-        connection.sendall(request.encode())
-        headers = self._read_http_headers(connection)
-        if not headers.startswith("HTTP/1.1 101"):
+        try:
+            connection.settimeout(self.timeout_seconds)
+            connection.connect(self.socket_path)
+            key = base64.b64encode(os.urandom(16)).decode()
+            request = (
+                "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
+                "Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+                f"Sec-WebSocket-Key: {key}\r\n\r\n"
+            )
+            connection.sendall(request.encode())
+            headers = self._read_http_headers(connection)
+            if not headers.startswith("HTTP/1.1 101"):
+                raise AppServerError(f"app-server WebSocket upgrade failed: {headers.splitlines()[0] if headers else 'empty response'}")
+            return connection
+        except Exception:
             connection.close()
-            raise AppServerError(f"app-server WebSocket upgrade failed: {headers.splitlines()[0] if headers else 'empty response'}")
-        return connection
+            raise
 
     @staticmethod
     def _read_http_headers(connection: socket.socket) -> str:

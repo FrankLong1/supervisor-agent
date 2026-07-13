@@ -28,14 +28,14 @@ class Supervisor:
     def _run_locked(self) -> dict[str, int | str | bool]:
         scanned = self.scanner.scan()
         if not scanned.unread_supported: return {"ran": True, "candidates": 0, "reason": scanned.note or "unread signal unavailable"}
-        observed_unread = {(candidate.host_id, candidate.thread_id, candidate.unread_at) for candidate in scanned.candidates if candidate.unread_at is not None}
+        observed_unread = {(candidate.host_id, candidate.thread_id, candidate.unread_at): candidate.title for candidate in scanned.candidates if candidate.unread_at is not None}
         self.state.reconcile_delivery_claims(observed_unread, self.config.delivery_confirmation_timeout_seconds)
         candidates = [item for item in scanned.candidates if not self.state.is_human_review(item.host_id, item.thread_id)]
         if not candidates: return {"ran": True, "candidates": 0, "reason": "no eligible idle threads"}
         processed = 0
         for candidate in candidates:
             if candidate.unread_at is None:
-                self.state.mark_human_review(candidate.host_id, candidate.thread_id, "unread task has no stable receipt key")
+                self.state.mark_human_review(candidate.host_id, candidate.thread_id, "unread task has no stable receipt key", candidate.title)
                 continue
             claim = self.state.delivery_claim(candidate.host_id, candidate.thread_id, candidate.unread_at)
             if claim is not None and claim[0] != "CONFIRMED":
@@ -48,21 +48,21 @@ class Supervisor:
                 returned_id, decision = self.claude.decide(self.state.session_id(), context)
                 if returned_id != "invalid-session": self.state.set_session_id(returned_id)
             except Exception as error:
-                self.state.mark_human_review(candidate.host_id, candidate.thread_id, f"context or classifier failure: {error}")
+                self.state.mark_human_review(candidate.host_id, candidate.thread_id, f"context or classifier failure: {error}", candidate.title)
                 continue
             processed += 1
             if self.config.shadow_mode:
                 self.state.record_shadow(candidate.host_id, candidate.thread_id, decision.kind.value, decision.reason, decision.reply); continue
             if decision.kind is DecisionKind.HUMAN_REVIEW_NEEDED:
-                self.state.mark_human_review(candidate.host_id, candidate.thread_id, decision.reason); continue
+                self.state.mark_human_review(candidate.host_id, candidate.thread_id, decision.reason, candidate.title); continue
             if not self.config.mutation_requested():
-                self.state.mark_human_review(candidate.host_id, candidate.thread_id, "reply blocked: explicit delivery enablement is required"); continue
+                self.state.mark_human_review(candidate.host_id, candidate.thread_id, "reply blocked: explicit delivery enablement is required", candidate.title); continue
             if not self.state.claim_delivery(candidate.host_id, candidate.thread_id, candidate.unread_at):
                 continue
             try:
                 receipt = self.codex.send_reply(candidate, decision.reply or "")
                 if not getattr(receipt, "transport_accepted", False):
                     raise RuntimeError("delivery adapter returned no transport acknowledgement")
-            except Exception as error: self.state.mark_human_review(candidate.host_id, candidate.thread_id, f"ambiguous reply delivery: {error}")
+            except Exception as error: self.state.mark_human_review(candidate.host_id, candidate.thread_id, f"ambiguous reply delivery: {error}", candidate.title)
             else: self.state.await_clearance(candidate.host_id, candidate.thread_id, candidate.unread_at)
         return {"ran": True, "candidates": len(candidates), "processed": processed, "shadow_mode": self.config.shadow_mode}
