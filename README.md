@@ -1,10 +1,14 @@
 # Codex unread-task supervisor
 
-This is a small, local Python supervisor for Codex tasks that have a verified unread/new-result signal. It is deliberately fail-closed: it performs no automatic reply unless an operator has separately proven that the inventory's `hasUnreadTurn` precisely matches Codex Mac's blue-dot state and native delivery consumes exactly that result.
+This is a small, local Python supervisor for Codex tasks. It scans every app-server thread whose runtime status is `idle`; Fable either continues the task or creates a permanent `HUMAN_REVIEW_NEEDED` stop marker.
 
 ## Architecture
 
-`UnreadScanner` is the first deterministic gate. It accepts only a **verified, read-only** inventory that provides `hasUnreadTurn` for every unarchived task, excludes the supervisor's own task, and returns unread tasks oldest first. `SupervisorState` is the second gate: terminal `HUMAN_REVIEW_NEEDED` markers in SQLite always win. Only then does `Supervisor` read a bounded context, resume one injected Claude/Fable session ID, and validate one decision.
+`UnreadScanner` is the first deterministic gate. It accepts only a **read-only** inventory that provides runtime status for every unarchived task, retains only `idle` threads, excludes the supervisor's own task, and orders candidates by `updatedAt`. `SupervisorState` is the second gate: terminal `HUMAN_REVIEW_NEEDED` markers in SQLite always win.
+
+Before a reply is sent, SQLite atomically records a claim for that exact `(host, task, unreadAt)` result. A successful transport acknowledgement moves the claim to `AWAITING_CLEARANCE`; no later tick can send that result again. The claim is confirmed only when the inventory no longer reports that same receipt. A claim interrupted before acknowledgement, or one whose unread signal does not clear within the configured confirmation timeout, becomes terminal human review. This favors a visible blue dot over a duplicate reply.
+
+Only then does `Supervisor` read a bounded context, resume an injected Claude/Fable session **for that one task**, apply the required supervisor prompt, and validate one decision. Read-context and classifier failures also become terminal human review; they are never silently retried.
 
 The allowed decision JSON has exactly these fields:
 
@@ -30,22 +34,46 @@ uv run codex-unread-supervisor status
 uv run codex-unread-supervisor canary-readiness
 ```
 
-State is outside the checkout at `$XDG_STATE_HOME/demo-agent-supervisor/state.sqlite3`, defaulting to `~/.local/state/demo-agent-supervisor/state.sqlite3`. It contains only terminal human-review markers, the one persisted supervisor session ID, and shadow-decision audit records.
+State is outside the checkout at `$XDG_STATE_HOME/demo-agent-supervisor/state.sqlite3`, defaulting to `~/.local/state/demo-agent-supervisor/state.sqlite3`. It contains terminal human-review markers, per-task supervisor session IDs, shadow-decision audit records, delivery claims, and canary evidence bindings.
 
-`scan-once` intentionally exits without running: this project does not include a guessed Claude/Fable CLI/session-resume adapter, and the currently observed app-server inventory does not expose `hasUnreadTurn`. Provide adapters only after their actual contracts are reviewed and tested. No cron configuration is included.
+`scan-once` runs one shadow-only cycle. The local Fable CLI's model, session creation/resume, and tools-disabled invocation were verified before it was wired. It never replies to Codex in this mode.
+
+## Boot and liveness (Linux)
+
+The package includes a **disabled-by-default** `systemd --user` service and watchdog timer. The managed `serve` process scans idle threads every 30 seconds, invokes Fable, and emits a heartbeat.
+
+Preview the files first:
+
+```bash
+uv run codex-unread-supervisor service-install --dry-run
+```
+
+Install them (still disabled), inspect the generated units, then explicitly enable only a shadow-mode deployment:
+
+```bash
+uv run codex-unread-supervisor service-install
+systemctl --user enable --now codex-unread-supervisor.service codex-unread-supervisor-watchdog.timer
+uv run codex-unread-supervisor doctor --strict
+```
+
+`doctor --json` reports independent state, Codex-socket, and heartbeat checks. `watchdog` is the strict, one-shot form used by the timer. A stale heartbeat is reported only—this release never kills or restarts an active worker, because that could make a delivery ambiguous. Remove the integration with:
+
+```bash
+uv run codex-unread-supervisor service-uninstall
+```
 
 ## Shadow mode and enablement
 
-The library's default config is shadow mode. In that mode it evaluates injected fakes/reviewed adapters and records proposed decisions but neither replies nor writes terminal markers. A non-shadow run still refuses delivery unless all three are explicit: `shadow_mode=False`, `allow_replies=True`, and `canary_verified=True`.
+The library's default config is shadow mode. In that mode it evaluates injected fakes/reviewed adapters and records proposed decisions but neither replies nor writes terminal markers. A non-shadow run still refuses delivery unless explicit enablement is paired with a durable canary-evidence record whose inventory and delivery-adapter identities exactly match the running configuration. A boolean is not canary evidence.
 
-Before any general automation, use one disposable Codex task and record evidence that:
+Before enabling any Codex reply, use one disposable Codex task and record evidence that:
 
-1. The verified inventory scan leaves its blue dot/unread state visible in Codex Mac.
-2. A successful native reply consumes exactly that unread result.
-3. The source agent's next visible result creates a new unread signal.
-4. An intentionally routed `HUMAN_REVIEW_NEEDED` task keeps its blue dot.
+1. `waitingOnUserInput` identifies the intended human-input state without changing it.
+2. A successful native reply transitions that exact task out of the waiting state.
+3. A later source-agent request for input creates a new waiting state.
+4. An intentionally routed `HUMAN_REVIEW_NEEDED` task remains visible to the operator.
 
-Only after that evidence and a reviewed production Claude/Fable resume adapter may an operator create an explicitly configured scheduler. If either condition changes, disable replies again. Never replace unread semantics with fingerprints.
+Only after that evidence has been recorded against the exact inventory and delivery-adapter versions, and after a reviewed production Claude/Fable resume adapter defines task isolation and prompt application, may an operator create an explicitly configured scheduler. If either adapter identity changes, the stored evidence no longer matches and replies are refused. Never replace unread semantics with fingerprints.
 
 ## Operator actions
 
@@ -65,4 +93,4 @@ That is the only supported way to clear a terminal marker. No agent or classifie
 
 ## Failure behavior
 
-Missing unread capability, an unverified inventory, and no eligible task stop before Claude is invoked. The nonblocking lock prevents overlapping ticks. Ambiguous send failures are never retried: the task is marked for human review. `HUMAN_REVIEW_NEEDED` does not acknowledge the unread result, so the blue dot remains for the operator.
+Missing status capability, a missing receipt key, and no eligible task stop before Fable is invoked. The nonblocking lock prevents overlapping ticks. Context and classifier failures, ambiguous sends, interrupted delivery claims, and uncleared acknowledged delivery are never retried: the task is marked for human review. `HUMAN_REVIEW_NEEDED` leaves the thread visible for the operator.
