@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 SERVICE_NAME = "codex-unread-supervisor"
+CONSOLE_SERVICE_NAME = f"{SERVICE_NAME}-console"
 
 
 def default_unit_dir() -> Path:
@@ -23,6 +24,7 @@ def _systemctl(*arguments: str) -> subprocess.CompletedProcess[str]:
 def render_units(program: Path, state_path: Path, interval: float) -> dict[str, str]:
     command = " ".join(shlex.quote(part) for part in (str(program), "serve", "--state-path", str(state_path), "--interval", str(interval)))
     doctor = " ".join(shlex.quote(part) for part in (str(program), "watchdog", "--state-path", str(state_path), "--interval", str(interval), "--strict"))
+    console = " ".join(shlex.quote(part) for part in (str(program), "console", "--state-path", str(state_path), "--port", "8765"))
     return {
         f"{SERVICE_NAME}.service": f"""[Unit]
 Description=Fail-closed Codex unread-task supervisor
@@ -35,6 +37,21 @@ Type=simple
 ExecStart={command}
 Restart=on-failure
 RestartSec=30
+
+[Install]
+WantedBy=default.target
+""",
+        f"{CONSOLE_SERVICE_NAME}.service": f"""[Unit]
+Description=Read-only dashboard for {SERVICE_NAME}
+After=graphical-session.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStart={console}
+Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=default.target
@@ -71,12 +88,12 @@ def install_units(unit_dir: Path, program: Path, state_path: Path, interval: flo
 
 
 def service_status() -> tuple[int, str]:
-    completed = _systemctl("status", SERVICE_NAME, f"{SERVICE_NAME}-watchdog.timer", "--no-pager")
+    completed = _systemctl("status", SERVICE_NAME, CONSOLE_SERVICE_NAME, f"{SERVICE_NAME}-watchdog.timer", "--no-pager")
     return completed.returncode, completed.stdout + completed.stderr
 
 
 def uninstall_units(unit_dir: Path) -> list[Path]:
-    _systemctl("disable", "--now", SERVICE_NAME, f"{SERVICE_NAME}-watchdog.timer")
+    _systemctl("disable", "--now", SERVICE_NAME, CONSOLE_SERVICE_NAME, f"{SERVICE_NAME}-watchdog.timer")
     removed: list[Path] = []
     for name in render_units(Path(sys.argv[0]).resolve(), Path("/unused"), 60).keys():
         path = unit_dir / name

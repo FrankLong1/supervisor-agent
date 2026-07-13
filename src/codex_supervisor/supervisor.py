@@ -46,6 +46,7 @@ class Supervisor:
                 if not context.recent_messages or context.latest_visible_result is None:
                     raise ValueError("bounded task context is empty or has no visible result")
                 returned_id, decision = self.claude.decide(self.state.session_id(), context)
+                self.state.record_fable_turn(candidate.host_id, candidate.thread_id)
                 if returned_id != "invalid-session": self.state.set_session_id(returned_id)
             except Exception as error:
                 self.state.mark_human_review(candidate.host_id, candidate.thread_id, f"context or classifier failure: {error}", candidate.title)

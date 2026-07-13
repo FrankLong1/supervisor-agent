@@ -40,7 +40,7 @@ State is outside the checkout at `$XDG_STATE_HOME/demo-agent-supervisor/state.sq
 
 ## Boot and liveness (Linux)
 
-The package includes a **disabled-by-default** `systemd --user` service and watchdog timer. The managed `serve` process scans idle threads every 30 seconds, invokes Fable, and emits a heartbeat.
+The package includes **disabled-by-default** `systemd --user` services for the supervisor and its read-only dashboard, plus a watchdog timer. The dashboard listens only on `http://127.0.0.1:8765/`; bookmark that address in a browser on the remote machine.
 
 Preview the files first:
 
@@ -52,8 +52,14 @@ Install them (still disabled), inspect the generated units, then explicitly enab
 
 ```bash
 uv run codex-unread-supervisor service-install
-systemctl --user enable --now codex-unread-supervisor.service codex-unread-supervisor-watchdog.timer
+systemctl --user enable --now codex-unread-supervisor.service codex-unread-supervisor-console.service codex-unread-supervisor-watchdog.timer
 uv run codex-unread-supervisor doctor --strict
+```
+
+If you view the remote machine from your own computer, create an SSH tunnel first, then bookmark the same address locally:
+
+```bash
+ssh -L 8765:127.0.0.1:8765 your-user@your-remote-machine
 ```
 
 `doctor --json` reports independent state, Codex-socket, and heartbeat checks. `watchdog` is the strict, one-shot form used by the timer. A stale heartbeat is reported only—this release never kills or restarts an active worker, because that could make a delivery ambiguous. Remove the integration with:

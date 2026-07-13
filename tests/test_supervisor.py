@@ -5,6 +5,7 @@ import threading
 import unittest
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 from codex_supervisor.cli import main
 from codex_supervisor.claude import ConservativeClaude, parse_decision
@@ -13,8 +14,9 @@ from codex_supervisor.codex import AppServerClient
 from codex_supervisor.health import heartbeat_check, write_heartbeat
 from codex_supervisor.human_review_queue import render_markdown
 from codex_supervisor.models import DecisionKind, DeliveryReceipt, SupervisorConfig, TaskContext
+from codex_supervisor.providers import build_session_adapter
 from codex_supervisor.scanner import UnreadScanner
-from codex_supervisor.service import SERVICE_NAME, render_units
+from codex_supervisor.service import CONSOLE_SERVICE_NAME, SERVICE_NAME, render_units
 from codex_supervisor.state import SupervisorState
 from codex_supervisor.supervisor import Supervisor
 
@@ -83,6 +85,8 @@ class Tests(unittest.TestCase):
     def test_5_one_session_id_is_persisted_and_reused(self):
         sup, _, session = self.make([{"id":"a","hasUnreadTurn":True},{"id":"b","hasUnreadTurn":True}]); sup.run_once()
         self.assertEqual([x[0] for x in session.calls], [None, "persistent-1"]); self.assertEqual(self.state.session_id(), "persistent-1")
+        self.assertEqual(self.state.fable_turn_count("host", "a"), 1)
+        self.assertEqual(self.state.fable_turn_count("host", "b"), 1)
         self.assertTrue(all(call[2] for call in session.calls))
 
     def test_supervisor_prompt_prefers_a_grounded_next_action_over_a_completion_claim(self):
@@ -97,6 +101,23 @@ class Tests(unittest.TestCase):
         self.assertEqual(parse_decision('{"decision":"REPLY","reason":"x","reply":"go"}').kind, DecisionKind.REPLY)
         self.assertEqual(parse_decision('{"decision":"NOPE","reason":"x","reply":null}').kind, DecisionKind.HUMAN_REVIEW_NEEDED)
         self.assertEqual(parse_decision('{"decision":"REPLY","reason":"x","reply":"go","extra":1}').kind, DecisionKind.HUMAN_REVIEW_NEEDED)
+
+    def test_non_claude_provider_can_supply_a_schema_valid_decision(self):
+        class StubAdapter:
+            def decide(self, session_id, context, system_prompt):
+                return "stub-session-1", '{"decision":"REPLY","reason":"grounded","reply":"continue"}'
+
+        adapter = build_session_adapter("stub", "unused", None, {"stub": lambda config: StubAdapter()})
+        candidate = UnreadScanner(FakeInventory([{"id": "a", "hasUnreadTurn": True}]), "host").scan().candidates[0]
+        session_id, decision = ConservativeClaude(adapter).decide(None, TaskContext(candidate, (), None))
+        self.assertEqual(session_id, "stub-session-1")
+        self.assertEqual(decision.kind, DecisionKind.REPLY)
+        self.assertEqual(decision.reply, "continue")
+
+    def test_claude_provider_preserves_the_current_command_and_model_defaults(self):
+        with patch("codex_supervisor.providers.ClaudeCodeSession") as adapter_type:
+            build_session_adapter("claude", "claude", None)
+        adapter_type.assert_called_once_with(command="claude", model="fable")
     def test_8_invalid_or_uncertain_outputs_become_terminal(self):
         for output in ("not json", '{"decision":"HUMAN_REVIEW_NEEDED","reason":"uncertain","reply":null}', '{"decision":"REPLY","reason":"","reply":"go"}'):
             self.state.reset_human_review("host", "a")
@@ -130,13 +151,30 @@ class Tests(unittest.TestCase):
         self.assertEqual(row["title"], "Review this task")
         self.assertIn("`a`", render_markdown([row]))
 
-    def test_console_renders_read_only_queue_with_thread_link(self):
+    def test_console_prioritizes_the_reason_and_hides_internal_task_ids(self):
         self.state.mark_human_review("host", "a", "needs human", "Task <one>")
         page = render_html(self.path, Path("/missing.sock"))
         self.assertIn("Fable human review queue", page)
+        self.assertIn("<p class=\"task-label\">Task</p>", page)
         self.assertIn("Task &lt;one&gt;", page)
-        self.assertIn("<code>a</code>", page)
-        self.assertIn("<code>a</code>", page)
+        self.assertIn("Why Fable stopped", page)
+        self.assertIn("<strong>Status:</strong><ul><li>needs human</li></ul>", page)
+        self.assertIn("<strong>What Fable established:</strong><ul>", page)
+        self.assertIn("<strong>Your next step:</strong><ul>", page)
+        self.assertIn("Fable turns: 0", page)
+        self.assertNotIn("<code>a</code>", page)
+
+    def test_console_keeps_filename_periods_inside_the_status_bullet(self):
+        self.state.mark_human_review("host", "a", "Choose from (.agents/, docs/) before proceeding. This needs human approval.", "Task")
+        page = render_html(self.path, Path("/missing.sock"))
+        self.assertIn("<strong>Status:</strong><ul><li>Choose from (.agents/, docs/) before proceeding.</li></ul>", page)
+
+    def test_console_limits_sections_to_four_short_sub_bullets(self):
+        reason = "Status is clear. " + " ".join(f"Evidence {index} is recorded." for index in range(6)) + " To unblock, review the result."
+        self.state.mark_human_review("host", "a", reason, "Task")
+        page = render_html(self.path, Path("/missing.sock"))
+        self.assertNotIn("Evidence 5 is recorded.", page)
+        self.assertNotIn("Evidence 6 is recorded.", page)
 
     def test_existing_human_review_rows_receive_blank_title_and_render_gracefully(self):
         self.state.mark_human_review("host", "legacy", "older marker")
@@ -221,6 +259,10 @@ class Tests(unittest.TestCase):
         self.assertIn("RestartSec=30", worker)
         self.assertIn("StartLimitBurst=3", worker)
         self.assertNotIn("--strict", worker)
+        console = units[f"{CONSOLE_SERVICE_NAME}.service"]
+        self.assertIn("console --state-path", console)
+        self.assertIn("--port 8765", console)
+        self.assertIn("Restart=on-failure", console)
         self.assertIn("watchdog --state-path", units[f"{SERVICE_NAME}-watchdog.service"])
         self.assertIn("--strict", units[f"{SERVICE_NAME}-watchdog.service"])
 

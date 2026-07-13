@@ -7,14 +7,15 @@ import sys
 import time
 from pathlib import Path
 
-from .claude import ClaudeCodeSession, ConservativeClaude
+from .claude import ConservativeClaude
 from .console import serve as serve_console
 from .codex import AppServerClient
 from .health import exit_code, report, write_heartbeat
 from .human_review_queue import render_markdown
 from .models import SupervisorConfig
+from .providers import build_session_adapter
 from .scanner import UnreadScanner
-from .service import default_unit_dir, install_units, service_status, uninstall_units
+from .service import CONSOLE_SERVICE_NAME, SERVICE_NAME, default_unit_dir, install_units, service_status, uninstall_units
 from .state import SupervisorState, default_state_path, read_human_review_queue
 from .supervisor import Supervisor
 
@@ -33,8 +34,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--unit-dir", type=Path, default=default_unit_dir())
     parser.add_argument("--program", type=Path, default=Path(sys.argv[0]).resolve())
-    parser.add_argument("--fable-command", default="claude")
-    parser.add_argument("--fable-model", default="fable")
+    parser.add_argument("--provider", default="claude")
+    parser.add_argument("--provider-command", default="claude")
+    parser.add_argument("--provider-model")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--open-browser", action="store_true")
     args = parser.parse_args(argv)
@@ -80,7 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             print(json.dumps({"unit_dir": str(args.unit_dir), "units": rendered}, sort_keys=True))
         else:
-            print(json.dumps({"installed": sorted(rendered), "unit_dir": str(args.unit_dir), "enabled": False, "next": f"systemctl --user enable --now codex-unread-supervisor.service codex-unread-supervisor-watchdog.timer"}, sort_keys=True))
+            enabled_units = f"{SERVICE_NAME}.service {CONSOLE_SERVICE_NAME}.service {SERVICE_NAME}-watchdog.timer"
+            print(json.dumps({"installed": sorted(rendered), "unit_dir": str(args.unit_dir), "enabled": False, "next": f"systemctl --user enable --now {enabled_units}"}, sort_keys=True))
         return 0
 
     if args.command == "service-status":
@@ -125,7 +128,8 @@ def build_live_supervisor(args):
     state = SupervisorState(args.state_path)
     client = AppServerClient(args.socket_path)
     config = SupervisorConfig(host_id=args.host_id, state_path=args.state_path, socket_path=args.socket_path, shadow_mode=False, allow_replies=True)
-    return Supervisor(config, UnreadScanner(client, args.host_id, config.supervisor_thread_id), client, ConservativeClaude(ClaudeCodeSession(args.fable_command, args.fable_model)), state), state
+    adapter = build_session_adapter(args.provider, args.provider_command, args.provider_model)
+    return Supervisor(config, UnreadScanner(client, args.host_id, config.supervisor_thread_id), client, ConservativeClaude(adapter), state), state
 
 
 if __name__ == "__main__":

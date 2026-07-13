@@ -11,7 +11,7 @@ def default_state_path() -> Path:
     return root / "demo-agent-supervisor" / "state.sqlite3"
 
 
-def read_human_review_queue(path: str | Path) -> list[dict[str, str]]:
+def read_human_review_queue(path: str | Path) -> list[dict[str, str | int | None]]:
     """Read human-review rows without creating or migrating supervisor state."""
     state_path = Path(path)
     if not state_path.exists():
@@ -23,12 +23,21 @@ def read_human_review_queue(path: str | Path) -> list[dict[str, str]]:
             title = "title"
         else:
             title = "'' AS title"
+        has_turn_audit = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='supervisor_fable_turns'"
+        ).fetchone() is not None
+        turn_count = (
+            "(SELECT count(*) FROM supervisor_fable_turns turns "
+            "WHERE turns.host_id=human_review_tasks.host_id AND turns.thread_id=human_review_tasks.thread_id)"
+            if has_turn_audit else "NULL"
+        )
         rows = db.execute(
-            f"SELECT host_id,thread_id,{title},reason,marked_at FROM human_review_tasks ORDER BY marked_at DESC"
+            f"SELECT host_id,thread_id,{title},reason,marked_at,{turn_count} AS fable_turn_count "
+            "FROM human_review_tasks ORDER BY marked_at DESC"
         ).fetchall()
         return [
-            {"host_id": str(host_id), "thread_id": str(thread_id), "title": str(row_title), "reason": str(reason), "marked_at": str(marked_at)}
-            for host_id, thread_id, row_title, reason, marked_at in rows
+            {"host_id": str(host_id), "thread_id": str(thread_id), "title": str(row_title), "reason": str(reason), "marked_at": str(marked_at), "fable_turn_count": None if fable_turn_count is None else int(fable_turn_count)}
+            for host_id, thread_id, row_title, reason, marked_at, fable_turn_count in rows
         ]
     finally:
         db.close()
@@ -52,6 +61,9 @@ class SupervisorState:
         CREATE TABLE IF NOT EXISTS supervisor_shadow_decisions (
           id INTEGER PRIMARY KEY AUTOINCREMENT, host_id TEXT NOT NULL, thread_id TEXT NOT NULL,
           decision TEXT NOT NULL, reason TEXT NOT NULL, reply TEXT, recorded_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS supervisor_fable_turns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, host_id TEXT NOT NULL, thread_id TEXT NOT NULL,
+          recorded_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS supervisor_canary_evidence (
           evidence_id TEXT PRIMARY KEY, inventory_identity TEXT NOT NULL,
           delivery_identity TEXT NOT NULL, recorded_at TEXT NOT NULL, revoked_at TEXT);
@@ -163,6 +175,19 @@ class SupervisorState:
     def record_shadow(self, host_id: str, thread_id: str, decision: str, reason: str, reply: str | None) -> None:
         self.db.execute("INSERT INTO supervisor_shadow_decisions(host_id,thread_id,decision,reason,reply,recorded_at) VALUES (?,?,?,?,?,?)", (host_id, thread_id, decision, reason, reply, datetime.now(UTC).isoformat()))
         self.db.commit()
+
+    def record_fable_turn(self, host_id: str, thread_id: str) -> None:
+        self.db.execute(
+            "INSERT INTO supervisor_fable_turns(host_id,thread_id,recorded_at) VALUES (?,?,?)",
+            (host_id, thread_id, datetime.now(UTC).isoformat()),
+        )
+        self.db.commit()
+
+    def fable_turn_count(self, host_id: str, thread_id: str) -> int:
+        return int(self.db.execute(
+            "SELECT count(*) FROM supervisor_fable_turns WHERE host_id=? AND thread_id=?",
+            (host_id, thread_id),
+        ).fetchone()[0])
 
     def status(self) -> dict[str, int | str | None]:
         return {"state_path": str(self.path), "session_id": self.session_id(), "human_review_count": self.db.execute("SELECT count(*) FROM human_review_tasks").fetchone()[0], "shadow_decision_count": self.db.execute("SELECT count(*) FROM supervisor_shadow_decisions").fetchone()[0], "pending_delivery_count": self.db.execute("SELECT count(*) FROM supervisor_delivery_claims WHERE status != 'CONFIRMED'").fetchone()[0]}
