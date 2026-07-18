@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .cli import main as unread_supervisor_main
+from .inbox_cli import main as inbox_main
 from .manager import (
     ACTIVE_PHASES,
     Manager,
@@ -195,6 +196,9 @@ def _follow_log(store: ManagerStore, session: Session) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    effective_argv = sys.argv[1:] if argv is None else argv
+    if effective_argv and effective_argv[0] == "inbox":
+        return inbox_main(effective_argv[1:])
     args = parser().parse_args(argv)
     if args.command == "scan-once":
         return _scan_once(args)

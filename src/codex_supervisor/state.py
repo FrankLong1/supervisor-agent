@@ -72,6 +72,28 @@ class SupervisorState:
           status TEXT NOT NULL CHECK (status IN ('CLAIMED','AWAITING_CLEARANCE','CONFIRMED')),
           claimed_at TEXT NOT NULL, updated_at TEXT NOT NULL,
           PRIMARY KEY (host_id, thread_id, unread_at));
+        CREATE TABLE IF NOT EXISTS supervisor_inbox_observations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          delivery_id TEXT NOT NULL, message_id TEXT NOT NULL, thread_id TEXT NOT NULL,
+          kind TEXT NOT NULL, proposed_route TEXT NOT NULL,
+          proposed_disposition TEXT NOT NULL, reason TEXT NOT NULL,
+          observed_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS supervisor_inbox_observations_delivery
+          ON supervisor_inbox_observations(delivery_id, observed_at);
+        CREATE TABLE IF NOT EXISTS supervisor_inbox_processing (
+          delivery_id TEXT PRIMARY KEY, message_id TEXT NOT NULL, thread_id TEXT NOT NULL,
+          claimant_instance_id TEXT NOT NULL, shared_claim_until TEXT NOT NULL,
+          local_status TEXT NOT NULL CHECK (local_status IN
+            ('CLAIMED','RECEIVED','HANDLED','REPLIED','NEEDS_HUMAN','AMBIGUOUS')),
+          handler_kind TEXT NOT NULL, proposed_outcome TEXT,
+          reply_idempotency_key TEXT, reply_message_id TEXT, last_error TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS supervisor_inbox_canary_evidence (
+          evidence_id TEXT PRIMARY KEY, contract_version TEXT NOT NULL,
+          adapter_identity TEXT NOT NULL, principal_identity TEXT NOT NULL,
+          instance_id TEXT NOT NULL, handler_identity TEXT NOT NULL,
+          delivery_id TEXT NOT NULL, reply_message_id TEXT NOT NULL,
+          recorded_at TEXT NOT NULL, revoked_at TEXT);
         """)
         columns = {str(row[1]) for row in self.db.execute("PRAGMA table_info(human_review_tasks)")}
         if "title" not in columns:
@@ -184,6 +206,107 @@ class SupervisorState:
             (host_id, thread_id, datetime.now(UTC).isoformat()),
         )
         self.db.commit()
+
+    def record_inbox_observation(self, *, delivery_id: str, message_id: str, thread_id: str,
+                                 kind: str, route: str, disposition: str, reason: str) -> None:
+        self.db.execute(
+            "INSERT INTO supervisor_inbox_observations(delivery_id,message_id,thread_id,kind,proposed_route,proposed_disposition,reason,observed_at) VALUES (?,?,?,?,?,?,?,?)",
+            (delivery_id, message_id, thread_id, kind[:64], route[:64], disposition[:64], reason[:512], datetime.now(UTC).isoformat()),
+        )
+        self.db.commit()
+
+    def record_inbox_poll(self) -> None:
+        self.db.execute(
+            "INSERT INTO supervisor_settings(key,value) VALUES ('inbox_last_successful_poll',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (datetime.now(UTC).isoformat(),),
+        )
+        self.db.commit()
+
+    def begin_inbox_processing(self, claim, handler_kind: str) -> bool:
+        return self.begin_inbox_processing_reference(
+            delivery_id=claim.envelope.delivery_id,
+            message_id=claim.envelope.message_id,
+            thread_id=claim.envelope.thread_id,
+            claimant_instance_id=claim.claimant_instance_id,
+            shared_claim_until=claim.claim_until.isoformat(),
+            handler_kind=handler_kind,
+        )
+
+    def begin_inbox_processing_reference(self, *, delivery_id: str, message_id: str,
+                                         thread_id: str, claimant_instance_id: str,
+                                         shared_claim_until: str, handler_kind: str) -> bool:
+        now = datetime.now(UTC).isoformat()
+        cursor = self.db.execute(
+            "INSERT OR IGNORE INTO supervisor_inbox_processing(delivery_id,message_id,thread_id,claimant_instance_id,shared_claim_until,local_status,handler_kind,created_at,updated_at) VALUES (?,?,?,?,?,'CLAIMED',?,?,?)",
+            (delivery_id, message_id, thread_id, claimant_instance_id,
+             shared_claim_until, handler_kind[:64], now, now),
+        )
+        self.db.commit()
+        return cursor.rowcount == 1
+
+    def inbox_processing(self, delivery_id: str) -> dict[str, str | None] | None:
+        row = self.db.execute(
+            "SELECT delivery_id,message_id,thread_id,claimant_instance_id,shared_claim_until,local_status,handler_kind,proposed_outcome,reply_idempotency_key,reply_message_id,last_error,created_at,updated_at FROM supervisor_inbox_processing WHERE delivery_id=?",
+            (delivery_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        keys = ("delivery_id","message_id","thread_id","claimant_instance_id","shared_claim_until","local_status","handler_kind","proposed_outcome","reply_idempotency_key","reply_message_id","last_error","created_at","updated_at")
+        return {key: None if value is None else str(value) for key, value in zip(keys, row, strict=True)}
+
+    def update_inbox_processing(self, delivery_id: str, status: str, *,
+                                proposed_outcome: str | None = None,
+                                reply_idempotency_key: str | None = None,
+                                reply_message_id: str | None = None,
+                                last_error: str | None = None) -> None:
+        allowed = {"CLAIMED", "RECEIVED", "HANDLED", "REPLIED", "NEEDS_HUMAN", "AMBIGUOUS"}
+        if status not in allowed:
+            raise ValueError("invalid inbox processing status")
+        self.db.execute(
+            "UPDATE supervisor_inbox_processing SET local_status=?, proposed_outcome=COALESCE(?,proposed_outcome), reply_idempotency_key=COALESCE(?,reply_idempotency_key), reply_message_id=COALESCE(?,reply_message_id), last_error=COALESCE(?,last_error), updated_at=? WHERE delivery_id=?",
+            (status, proposed_outcome, reply_idempotency_key, reply_message_id,
+             None if last_error is None else last_error[:512], datetime.now(UTC).isoformat(), delivery_id),
+        )
+        self.db.commit()
+
+    def mark_inbox_human_review(self, instance_id: str, delivery_id: str, thread_id: str,
+                                reason: str, title: str = "Shared inbox delivery") -> None:
+        self.update_inbox_processing(delivery_id, "AMBIGUOUS" if "ambiguous" in reason.lower() else "NEEDS_HUMAN", last_error=reason)
+        self.mark_human_review(f"inbox:{instance_id}", thread_id, reason[:512], title[:256])
+
+    def record_inbox_canary(self, *, evidence_id: str, contract_version: str,
+                            adapter_identity: str, principal_identity: str,
+                            instance_id: str, handler_identity: str,
+                            delivery_id: str, reply_message_id: str) -> None:
+        values = (evidence_id, contract_version, adapter_identity, principal_identity,
+                  instance_id, handler_identity, delivery_id, reply_message_id)
+        if not all(value and value.strip() for value in values):
+            raise ValueError("inbox canary evidence fields must be non-empty")
+        self.db.execute(
+            "INSERT INTO supervisor_inbox_canary_evidence(evidence_id,contract_version,adapter_identity,principal_identity,instance_id,handler_identity,delivery_id,reply_message_id,recorded_at,revoked_at) VALUES (?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(evidence_id) DO UPDATE SET contract_version=excluded.contract_version,adapter_identity=excluded.adapter_identity,principal_identity=excluded.principal_identity,instance_id=excluded.instance_id,handler_identity=excluded.handler_identity,delivery_id=excluded.delivery_id,reply_message_id=excluded.reply_message_id,recorded_at=excluded.recorded_at,revoked_at=NULL",
+            (*values, datetime.now(UTC).isoformat()),
+        )
+        self.db.commit()
+
+    def inbox_canary_matches(self, *, evidence_id: str, contract_version: str,
+                             adapter_identity: str, principal_identity: str,
+                             instance_id: str, handler_identity: str) -> bool:
+        row = self.db.execute(
+            "SELECT 1 FROM supervisor_inbox_canary_evidence WHERE evidence_id=? AND contract_version=? AND adapter_identity=? AND principal_identity=? AND instance_id=? AND handler_identity=? AND revoked_at IS NULL",
+            (evidence_id, contract_version, adapter_identity, principal_identity, instance_id, handler_identity),
+        ).fetchone()
+        return row is not None
+
+    def inbox_status(self) -> dict[str, int | str | None]:
+        last = self.db.execute("SELECT value FROM supervisor_settings WHERE key='inbox_last_successful_poll'").fetchone()
+        return {
+            "last_successful_poll": None if last is None else str(last[0]),
+            "observation_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_observations").fetchone()[0]),
+            "active_processing_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_processing WHERE local_status IN ('CLAIMED','RECEIVED')").fetchone()[0]),
+            "ambiguous_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_processing WHERE local_status='AMBIGUOUS'").fetchone()[0]),
+            "inbox_human_review_count": int(self.db.execute("SELECT count(*) FROM human_review_tasks WHERE host_id LIKE 'inbox:%'").fetchone()[0]),
+            "active_canary_evidence_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_canary_evidence WHERE revoked_at IS NULL").fetchone()[0]),
+        }
 
     def fable_turn_count(self, host_id: str, thread_id: str) -> int:
         return int(self.db.execute(

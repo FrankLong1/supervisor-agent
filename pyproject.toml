@@ -10,6 +10,9 @@ requires-python = ">=3.11"
 readme = "README.md"
 license = {text = "MIT"}
 
+[project.optional-dependencies]
+inbox = ["psycopg[binary]>=3.2,<4"]
+
 [project.scripts]
 codex-unread-supervisor = "codex_supervisor.cli:main"
 supervisor = "codex_supervisor.manager_cli:main"
