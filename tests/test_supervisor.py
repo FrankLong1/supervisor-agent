@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -534,11 +535,37 @@ class Tests(unittest.TestCase):
         worker = units[f"{SERVICE_NAME}.service"]
         self.assertIn("Restart=on-failure", worker)
         self.assertIn("StartLimitBurst=3", worker)
+        self.assertIn(
+            "EnvironmentFile=-%h/.config/codex-unread-supervisor/inbox.env", worker
+        )
         console = units[f"{CONSOLE_SERVICE_NAME}.service"]
         self.assertIn("console --state-path", console)
         self.assertIn(
             "watchdog --state-path", units[f"{SERVICE_NAME}-watchdog.service"]
         )
+
+    def test_serve_uses_one_worker_for_local_and_cloud_ticks(self):
+        ticks: list[tuple[dict, dict]] = []
+
+        def run_combined(**kwargs):
+            ticks.append((kwargs["local_poll"](), kwargs["inbox_poll"]()))
+
+        with (
+            patch.dict(
+                os.environ, {"SUPERVISOR_INBOX_MODE": "disabled"}, clear=True
+            ),
+            patch("codex_supervisor.cli.signal.signal"),
+            patch("codex_supervisor.cli.AppServerClient") as client_type,
+            patch("codex_supervisor.cli.run_worker", side_effect=run_combined),
+        ):
+            client_type.return_value.list_unarchived_threads.return_value = []
+            self.assertEqual(
+                main(["serve", "--state-path", str(self.path), "--interval", "5"]),
+                0,
+            )
+        self.assertEqual(len(ticks), 1)
+        self.assertTrue(ticks[0][0]["reachable"])
+        self.assertFalse(ticks[0][1]["configured"])
 
 
 if __name__ == "__main__":

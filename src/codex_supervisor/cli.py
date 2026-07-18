@@ -4,14 +4,16 @@ import argparse
 import json
 import signal
 import sys
-import time
 from pathlib import Path
 
 from .claude import ConservativeClaude
 from .console import serve as serve_console
 from .codex import AppServerClient
-from .health import exit_code, report, write_heartbeat
+from .health import exit_code, report
 from .human_review_queue import render_markdown
+from .inbox.config import InboxConfig, InboxMode
+from .inbox.postgres import PostgresInboxAdapter
+from .inbox.service import InboxService
 from .models import SupervisorConfig
 from .providers import build_session_adapter
 from .scanner import CodexAppSnapshotInventory, UnreadScanner
@@ -25,6 +27,7 @@ from .service import (
 )
 from .state import SupervisorState, default_state_path, read_human_review_queue
 from .supervisor import Supervisor
+from .worker import run_worker
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,6 +89,23 @@ def main(argv: list[str] | None = None) -> int:
         return exit_code(report_data, strict=args.strict or args.command == "watchdog")
 
     if args.command == "serve":
+        if not 5 <= args.interval <= 300:
+            parser.error("serve --interval must be between 5 and 300 seconds")
+        try:
+            inbox_config = InboxConfig.from_env()
+        except ValueError as error:
+            parser.error(str(error))
+        if inbox_config.mode is InboxMode.ONE_SHOT:
+            parser.error(
+                "serve requires SUPERVISOR_INBOX_MODE=disabled, dry-run, or poll"
+            )
+        if (
+            inbox_config.mode is not InboxMode.DISABLED
+            and float(inbox_config.poll_seconds) != args.interval
+        ):
+            parser.error(
+                "serve --interval must match SUPERVISOR_INBOX_POLL_SECONDS"
+            )
         stopping = False
 
         def request_stop(_signum, _frame):
@@ -94,17 +114,50 @@ def main(argv: list[str] | None = None) -> int:
 
         signal.signal(signal.SIGTERM, request_stop)
         signal.signal(signal.SIGINT, request_stop)
-        while not stopping:
-            write_heartbeat(
-                args.state_path,
-                result="ok",
-                interval=args.interval,
-                detail="heartbeat only; run supervisor scan-once to inspect unread tasks",
+        client = AppServerClient(args.socket_path)
+        state = SupervisorState(args.state_path)
+
+        def local_poll() -> dict[str, object]:
+            scanned = UnreadScanner(client, args.host_id).scan()
+            return {
+                "reachable": True,
+                "unread_supported": scanned.unread_supported,
+                "candidate_count": len(scanned.candidates),
+                "note": scanned.note,
+            }
+
+        def inbox_poll() -> dict[str, object]:
+            if inbox_config.mode is InboxMode.DISABLED:
+                return {"configured": False, "mode": inbox_config.mode.value}
+            adapter = PostgresInboxAdapter(
+                inbox_config.dsn, schema=inbox_config.schema
             )
-            for _ in range(max(1, int(args.interval * 5))):
-                if stopping:
-                    break
-                time.sleep(0.2)
+            try:
+                service = InboxService(inbox_config, adapter, state)
+                if inbox_config.mode is InboxMode.DRY_RUN:
+                    return {
+                        "configured": True,
+                        "mode": inbox_config.mode.value,
+                        "handling_enabled": False,
+                        **service.scan_once(),
+                    }
+                return {"configured": True, **service.poll_once()}
+            finally:
+                adapter.close()
+
+        try:
+            run_worker(
+                state_path=args.state_path,
+                interval=args.interval,
+                stop_requested=lambda: stopping,
+                local_poll=local_poll,
+                inbox_poll=inbox_poll,
+            )
+        except RuntimeError as error:
+            print(f"supervisor worker: {error}", file=sys.stderr)
+            return 1
+        finally:
+            state.close()
         return 0
 
     if args.command == "service-install":

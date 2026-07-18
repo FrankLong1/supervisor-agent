@@ -9,6 +9,7 @@ from .inbox.config import InboxConfig, InboxMode
 from .inbox.postgres import ADAPTER_IDENTITY, CONTRACT_VERSION, PostgresInboxAdapter
 from .inbox.service import CANARY_EVIDENCE_ID, HANDLER_IDENTITY, InboxService
 from .state import SupervisorState, default_state_path
+from .worker import WorkerLease
 
 
 def parser() -> argparse.ArgumentParser:
@@ -86,9 +87,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "canary":
             if not args.delivery_id:
                 raise ValueError("canary requires --delivery-id")
-            result = service.canary(args.delivery_id, args.sender_observed_reply_id)
+            with WorkerLease(args.state_path):
+                result = service.canary(
+                    args.delivery_id, args.sender_observed_reply_id
+                )
         elif args.command == "run-once":
-            result = service.run_once()
+            with WorkerLease(args.state_path):
+                result = service.run_once()
         else:
             if (
                 not args.recipient_address

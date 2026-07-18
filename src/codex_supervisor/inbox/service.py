@@ -157,6 +157,36 @@ class InboxService:
             )
         return self._claim_and_handle()
 
+    def poll_once(self, limit: int = 20) -> dict[str, Any]:
+        """Observe the queue every tick and handle at most one canary-cleared item."""
+        if self.config.mode is not InboxMode.POLL:
+            raise ValueError("persistent inbox polling requires poll mode")
+        self.config.require_live_identity()
+        observed = self.scan_once(limit)
+        principal_identity = self._identity()
+        canary_matches = self.state.inbox_canary_matches(
+            evidence_id=CANARY_EVIDENCE_ID,
+            contract_version=self.adapter.contract_version,
+            adapter_identity=self.adapter.adapter_identity,
+            principal_identity=principal_identity,
+            instance_id=self.config.instance_id,
+            handler_identity=HANDLER_IDENTITY,
+        )
+        if not canary_matches:
+            return {
+                **observed,
+                "mode": self.config.mode.value,
+                "handling_enabled": False,
+                "claimed": False,
+                "reason": "matching sender-verified inbox canary evidence is required",
+            }
+        return {
+            **observed,
+            "mode": self.config.mode.value,
+            "handling_enabled": True,
+            **self._claim_and_handle(),
+        }
+
     def send_task(
         self,
         *,

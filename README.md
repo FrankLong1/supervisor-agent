@@ -17,8 +17,9 @@ Install both console commands for the current user:
 ./scripts/install-supervisor.sh
 ```
 
-The installer adds an idempotent Zsh PATH/alias block. It does not start or
-enable a service.
+The installer adds an idempotent Zsh PATH/alias block and includes the
+PostgreSQL client required by the repository shared-inbox skill. It does not
+start or enable a service.
 
 For development:
 
@@ -126,15 +127,20 @@ The browser console is loopback-only and read-only at
 `http://127.0.0.1:8765/`. Existing terminal human-review markers can be cleared
 only with the explicit `reset-human-review` command.
 
-The legacy `serve` command now publishes heartbeat-only compatibility status;
-it does not scan tasks. Systemd user units rendered by `service-install` remain
-disabled by default and must never be enabled implicitly by image installation.
+The `serve` command is the single foreground scheduler. Every bounded tick
+checks the local Codex app server and, when configured, the Cloud SQL inbox.
+The inbox defaults to disabled. In `dry-run` mode it continuously observes
+queued deliveries; in `poll` mode it handles at most one deterministic delivery
+per tick after matching sender-verified canary evidence. Systemd user units
+rendered by `service-install` read the optional
+`~/.config/codex-unread-supervisor/inbox.env` file and remain disabled until the
+workstation startup/service owner enables them.
 
 ## Safety boundary and later work
 
-Delivery-claim and canary-evidence storage remain available for the reviewed
-future live-delivery implementation, but no current command can activate a
-reply path. Automatic replies, restart policy, detached sessions, services,
-and richer UI are separate later specs.
+Cloud inbox mutation is limited to the deterministic handlers documented in
+the operator guide and remains gated by exact identity plus sender-verified
+canary evidence. Generic LLM execution and automatic Codex task replies remain
+disabled. Richer task acceptance/execution and UI are separate later specs.
 
 See [the specs index](specs/README.md) for the implementation split.

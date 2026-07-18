@@ -8,6 +8,7 @@ from pathlib import Path
 
 SERVICE_NAME = "codex-unread-supervisor"
 CONSOLE_SERVICE_NAME = f"{SERVICE_NAME}-console"
+ENVIRONMENT_FILE = "%h/.config/codex-unread-supervisor/inbox.env"
 
 
 def default_unit_dir() -> Path:
@@ -34,6 +35,7 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
+EnvironmentFile=-{ENVIRONMENT_FILE}
 ExecStart={command}
 Restart=on-failure
 RestartSec=30

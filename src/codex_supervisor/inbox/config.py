@@ -21,7 +21,7 @@ class InboxConfig:
     mode: InboxMode = InboxMode.DISABLED
     dsn: str | None = None
     instance_id: str | None = None
-    poll_seconds: int = 10
+    poll_seconds: int = 30
     claim_seconds: int = 120
     agent_id: str | None = None
     agent_address: str | None = None
@@ -32,7 +32,7 @@ class InboxConfig:
         source = os.environ if env is None else env
         try:
             mode = InboxMode(source.get("SUPERVISOR_INBOX_MODE", "disabled"))
-            poll = int(source.get("SUPERVISOR_INBOX_POLL_SECONDS", "10"))
+            poll = int(source.get("SUPERVISOR_INBOX_POLL_SECONDS", "30"))
             claim = int(source.get("SUPERVISOR_INBOX_CLAIM_SECONDS", "120"))
         except (ValueError, TypeError) as error:
             raise ValueError("malformed supervisor inbox configuration") from error
@@ -72,7 +72,7 @@ class InboxConfig:
 
     def require_live_identity(self) -> None:
         if self.mode not in {InboxMode.ONE_SHOT, InboxMode.POLL}:
-            raise ValueError("live inbox mutation requires one-shot mode")
+            raise ValueError("live inbox mutation requires one-shot or poll mode")
         if not self.agent_id:
             raise ValueError("live inbox mutation requires SUPERVISOR_INBOX_AGENT_ID")
 

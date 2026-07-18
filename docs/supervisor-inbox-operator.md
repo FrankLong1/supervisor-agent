@@ -1,9 +1,9 @@
 # Supervisor shared inbox operator guide
 
-The shared inbox is an optional, fail-closed PostgreSQL adapter. It does not
-change the existing Codex unread-task scanner, delivery claims, canary, or
-human-review behavior. It has no polling daemon and never invokes a generic
-LLM/provider.
+The shared inbox is an optional, fail-closed PostgreSQL adapter. The existing
+`codex-unread-supervisor serve` scheduler polls the local Codex app server and
+Cloud SQL in the same tick. It never invokes a generic LLM/provider for inbox
+content.
 
 Install the optional client dependency with `pip install -e '.[inbox]'` and
 point the DSN at a Cloud SQL Auth Proxy port or socket. Do not put credentials
@@ -17,9 +17,37 @@ export SUPERVISOR_INBOX_AGENT_ID='00000000-0000-0000-0000-000000000000'
 ```
 
 `SUPERVISOR_INBOX_SCHEMA` defaults to `public`. Poll seconds must be 5–300 and
-claim seconds 5–900. The inbox defaults to `disabled`; merely running existing
-`supervisor codex`, `supervisor claude`, or `supervisor scan-once` commands does
-not connect to PostgreSQL.
+claim seconds 5–900. The inbox defaults to `disabled`; interactive manager and
+manual local scan commands do not connect to PostgreSQL.
+
+## Continuous combined worker
+
+Copy `config/inbox.env.example` to
+`~/.config/codex-unread-supervisor/inbox.env`, fill in one real user's exact
+email and immutable agent UUID, and set mode `0600`. The generated systemd user
+service reads this file without placing the DSN in its unit. The DSN must point
+to a keyless IAM-authenticated Cloud SQL Auth Proxy owned by that same user.
+
+Run the foreground worker directly for inspection:
+
+```bash
+set -a
+. ~/.config/codex-unread-supervisor/inbox.env
+set +a
+codex-unread-supervisor serve --interval 30
+```
+
+Each tick lists queued deliveries and records body-free, deduplicated routing
+observations. `dry-run` mode only observes. `poll` mode additionally claims and
+handles at most one delivery per tick, but only while the configured real-user
+identity has matching sender-verified canary evidence. Without that evidence,
+the worker stays alive, continues observing, and publishes a degraded heartbeat
+that names the gate. It never silently upgrades observation into mutation.
+
+The worker holds one process-lifetime lease. A second scheduler refuses to
+start. Expected app-server or database failures are isolated per source and the
+next tick retries; heartbeat details contain only bounded projections and error
+types, never DSNs or message bodies.
 
 Use `supervisor inbox status` for local status. It masks the connection target
 and does not connect unless `--check-connection` is supplied. Use

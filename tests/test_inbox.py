@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import tempfile
 import unittest
@@ -165,6 +166,35 @@ class InboxTests(unittest.TestCase):
         }
         self.assertNotIn("body_text", columns)
         self.assertNotIn("body_json", columns)
+
+    def test_poll_observes_continuously_but_claims_only_after_canary(self) -> None:
+        item = envelope(MessageKind.NOTE)
+        adapter = FakeInboxAdapter((item,))
+        adapter.claim = claim(item)
+        config = replace(self.config, mode=InboxMode.POLL)
+        service = InboxService(config, adapter, self.state)
+
+        gated = service.poll_once()
+        self.assertEqual(gated["observed"], 1)
+        self.assertFalse(gated["handling_enabled"])
+        self.assertEqual(adapter.claims, [])
+        service.poll_once()
+        self.assertEqual(self.state.inbox_status()["observation_count"], 1)
+
+        self.state.record_inbox_canary(
+            evidence_id=CANARY_EVIDENCE_ID,
+            contract_version=adapter.contract_version,
+            adapter_identity=adapter.adapter_identity,
+            principal_identity=adapter.identity,
+            instance_id=config.instance_id,
+            handler_identity=HANDLER_IDENTITY,
+            delivery_id="canary",
+            reply_message_id="reply",
+        )
+        handled = service.poll_once()
+        self.assertTrue(handled["handling_enabled"])
+        self.assertEqual(handled["local_status"], "HANDLED")
+        self.assertEqual(len(adapter.claims), 1)
 
     def test_local_claim_is_committed_before_shared_receipt(self) -> None:
         item = envelope(MessageKind.NOTE)

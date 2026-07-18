@@ -209,6 +209,12 @@ class SupervisorState:
 
     def record_inbox_observation(self, *, delivery_id: str, message_id: str, thread_id: str,
                                  kind: str, route: str, disposition: str, reason: str) -> None:
+        existing = self.db.execute(
+            "SELECT 1 FROM supervisor_inbox_observations WHERE delivery_id=? AND message_id=? AND proposed_route=? AND proposed_disposition=? LIMIT 1",
+            (delivery_id, message_id, route[:64], disposition[:64]),
+        ).fetchone()
+        if existing is not None:
+            return
         self.db.execute(
             "INSERT INTO supervisor_inbox_observations(delivery_id,message_id,thread_id,kind,proposed_route,proposed_disposition,reason,observed_at) VALUES (?,?,?,?,?,?,?,?)",
             (delivery_id, message_id, thread_id, kind[:64], route[:64], disposition[:64], reason[:512], datetime.now(UTC).isoformat()),

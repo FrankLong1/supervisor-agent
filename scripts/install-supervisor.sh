@@ -5,7 +5,9 @@ set -euo pipefail
 # This is safe to run repeatedly in a remote-image provisioning step.
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # --force replaces a prior supervisor executable from an older image build.
-uv tool install --reinstall --force --from "$repo_dir" codex-unread-task-supervisor
+uv tool install --reinstall --force \
+  --with 'psycopg[binary]>=3.2,<4' \
+  --from "$repo_dir" codex-unread-task-supervisor
 
 zshrc="${HOME}/.zshrc"
 start="# >>> codex-supervisor-manager >>>"
