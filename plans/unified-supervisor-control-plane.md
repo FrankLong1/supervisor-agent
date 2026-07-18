@@ -1,5 +1,18 @@
 # Unified Supervisor Control Plane
 
+```mermaid
+flowchart LR
+    Sources["Cloud SQL inbox<br/>and local task status"] --> Worker["One 30-second worker"]
+    Worker --> Route{"What changed?"}
+    Route -->|"Safe and deterministic"| Handle["Handle and audit"]
+    Route -->|"Human judgment"| Review["NEEDS_HUMAN"]
+    Route -->|"Nothing actionable"| Standby["Stand down"]
+    Handle --> Cockpit["Wake SUPERVISOR AGENT<br/>xhigh"]
+    Review --> Cockpit
+    Cockpit --> Standby
+    Standby -->|"New inbox or status edge"| Worker
+```
+
 This plan has been split into implementable specs. The old all-at-once handoff
 mixed immediate safety cleanup with live delivery, restart policy, terminal
 multiplexing, services, and dashboard work. Git history retains that document

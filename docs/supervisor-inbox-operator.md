@@ -1,5 +1,18 @@
 # Supervisor shared inbox operator guide
 
+```mermaid
+flowchart LR
+    Sources["Cloud SQL inbox<br/>and local task status"] --> Worker["One 30-second worker"]
+    Worker --> Route{"What changed?"}
+    Route -->|"Safe and deterministic"| Handle["Handle and audit"]
+    Route -->|"Human judgment"| Review["NEEDS_HUMAN"]
+    Route -->|"Nothing actionable"| Standby["Stand down"]
+    Handle --> Cockpit["Wake SUPERVISOR AGENT<br/>xhigh"]
+    Review --> Cockpit
+    Cockpit --> Standby
+    Standby -->|"New inbox or status edge"| Worker
+```
+
 The shared inbox is an optional, fail-closed PostgreSQL adapter. The existing
 `codex-unread-supervisor serve` scheduler polls the local Codex app server and
 Cloud SQL in the same tick. It never invokes a generic LLM/provider for inbox

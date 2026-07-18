@@ -1,5 +1,18 @@
 # Supervisor
 
+```mermaid
+flowchart LR
+    Sources["Cloud SQL inbox<br/>and local task status"] --> Worker["One 30-second worker"]
+    Worker --> Route{"What changed?"}
+    Route -->|"Safe and deterministic"| Handle["Handle and audit"]
+    Route -->|"Human judgment"| Review["NEEDS_HUMAN"]
+    Route -->|"Nothing actionable"| Standby["Stand down"]
+    Handle --> Cockpit["Wake SUPERVISOR AGENT<br/>xhigh"]
+    Review --> Cockpit
+    Cockpit --> Standby
+    Standby -->|"New inbox or status edge"| Worker
+```
+
 This package provides two deliberately small pieces:
 
 1. `supervisor` runs and monitors one interactive Codex or Claude process.
