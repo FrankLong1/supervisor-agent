@@ -19,6 +19,7 @@ COCKPIT_UPDATE_NAMESPACE = UUID("4bb76166-f45c-4ae0-8e2b-e907473238fd")
 class CockpitConfig:
     thread_id: str | None = None
     expected_title: str = COCKPIT_TITLE
+    reasoning_effort: str = "xhigh"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "CockpitConfig":
@@ -164,10 +165,18 @@ class CockpitBridge:
                 expected_title=self.config.expected_title,
                 message=cockpit_prompt(snapshot),
                 client_message_id=client_message_id,
+                reasoning_effort=self.config.reasoning_effort,
             )
         except Exception as error:
             self.state.fail_cockpit_update(int(pending["id"]), type(error).__name__)
             raise
+        if not receipt.delivered:
+            return {
+                "configured": True,
+                "delivered": False,
+                "new_state": update_id is not None,
+                "reason": receipt.reason or "deferred",
+            }
         self.state.deliver_cockpit_update(
             int(pending["id"]), receipt.delivery_id, receipt.transport
         )

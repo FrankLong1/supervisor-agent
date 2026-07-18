@@ -68,6 +68,8 @@ class DeliveryReceipt:
 class CockpitDeliveryReceipt:
     delivery_id: str | None
     transport: str
+    delivered: bool = True
+    reason: str | None = None
 
 
 @dataclass(frozen=True)

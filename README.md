@@ -140,6 +140,8 @@ When `SUPERVISOR_COCKPIT_THREAD_ID` names the one unarchived task titled
 `SUPERVISOR AGENT`, that same worker also sends edge-triggered, body-free status
 updates to the task through the documented Codex app-server turn APIs. See the
 operator guide for the fail-closed binding and audit details.
+An idle cockpit wakes at `xhigh` reasoning; an active cockpit is never steered,
+and unchanged quiet polls leave it standing down.
 
 ## Safety boundary and later work
 

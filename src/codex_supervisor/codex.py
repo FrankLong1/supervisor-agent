@@ -148,8 +148,9 @@ class AppServerClient:
         expected_title: str,
         message: str,
         client_message_id: str,
+        reasoning_effort: str,
     ) -> CockpitDeliveryReceipt:
-        """Send one explicitly automated update to an exact unarchived cockpit."""
+        """Wake one exact idle cockpit without interrupting an active turn."""
         matches = [
             thread
             for thread in self.list_unarchived_threads()
@@ -164,32 +165,12 @@ class AppServerClient:
         status_type = status.get("type") if isinstance(status, dict) else None
         input_items = [{"type": "text", "text": message}]
         if status_type == "active":
-            context = self.request(
-                "thread/read", {"threadId": thread_id, "includeTurns": True}
-            ).get("thread", {})
-            turns = context.get("turns", []) if isinstance(context, dict) else []
-            active_turn_id = next(
-                (
-                    str(turn["id"])
-                    for turn in reversed(turns)
-                    if isinstance(turn, dict)
-                    and turn.get("status") == "inProgress"
-                    and turn.get("id")
-                ),
+            return CockpitDeliveryReceipt(
                 None,
+                "deferred",
+                delivered=False,
+                reason="cockpit_active",
             )
-            if active_turn_id is None:
-                raise AppServerError("active cockpit has no verifiable in-progress turn")
-            result = self.request(
-                "turn/steer",
-                {
-                    "threadId": thread_id,
-                    "expectedTurnId": active_turn_id,
-                    "clientUserMessageId": client_message_id,
-                    "input": input_items,
-                },
-            )
-            return CockpitDeliveryReceipt(self._turn_id(result), "turn/steer")
         if status_type != "idle":
             raise AppServerError("configured cockpit is neither idle nor active")
         self.request("thread/resume", {"threadId": thread_id})
@@ -199,6 +180,7 @@ class AppServerClient:
                 "threadId": thread_id,
                 "clientUserMessageId": client_message_id,
                 "input": input_items,
+                "effort": reasoning_effort,
             },
         )
         return CockpitDeliveryReceipt(self._turn_id(result), "turn/start")

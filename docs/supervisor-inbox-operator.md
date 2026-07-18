@@ -61,11 +61,17 @@ status projection changes. It does not start another scheduler.
 
 The bridge uses the documented local app-server protocol. It verifies that the
 configured UUID identifies exactly one unarchived task with the expected title,
-then uses `turn/steer` for an active task or `thread/resume` plus `turn/start` for
-an idle task. A deterministic `clientUserMessageId` and the local SQLite audit
-table make retries idempotent and visible. A title mismatch, missing/archived
-task, unknown task state, or app-server error fails closed and records only the
-exception type.
+then uses `thread/resume` plus `turn/start` with `xhigh` reasoning for an idle
+task. An active cockpit is never steered or interrupted; the newest status edge
+remains pending and is delivered after the cockpit becomes idle. A deterministic
+`clientUserMessageId` and the local SQLite audit table make retries idempotent
+and visible. A title mismatch, missing/archived task, unknown task state, or
+app-server error fails closed and records only the exception type.
+
+The worker remains the cheap, durable wake listener. When no actionable local
+task is established and the Cloud SQL inbox is empty, the cockpit finishes its
+turn and stands down as an idle task. A later status edge, including new Cloud
+SQL inbox work, starts a new cockpit turn; unchanged 30-second polls do not.
 
 Cockpit prompts are explicitly labeled as automated and contain only bounded
 health flags, counts, deterministic route totals, human-review totals, canary

@@ -57,7 +57,7 @@ class FakeCockpitClient:
         self.calls.append(kwargs)
         if self.fail:
             raise AppServerError("secret server payload")
-        return CockpitDeliveryReceipt("turn-1", "turn/steer")
+        return CockpitDeliveryReceipt("turn-1", "turn/start")
 
 
 class CockpitTests(unittest.TestCase):
@@ -107,8 +107,9 @@ class CockpitTests(unittest.TestCase):
         self.assertEqual(second["reason"], "unchanged")
         self.assertEqual(len(client.calls), 1)
         self.assertEqual(client.calls[0]["expected_title"], "SUPERVISOR AGENT")
+        self.assertEqual(client.calls[0]["reasoning_effort"], "xhigh")
         self.assertEqual(
-            self.state.cockpit_status()["last_transport"], "turn/steer"
+            self.state.cockpit_status()["last_transport"], "turn/start"
         )
         self.assertEqual(self.state.cockpit_status()["pending_count"], 0)
 
@@ -123,6 +124,21 @@ class CockpitTests(unittest.TestCase):
         self.assertEqual(status["last_error_type"], "AppServerError")
         client.fail = False
         self.assertTrue(bridge.publish(tick())["delivered"])
+
+    def test_active_cockpit_defers_and_keeps_latest_edge_pending(self) -> None:
+        class DeferredClient(FakeCockpitClient):
+            def send_cockpit_update(self, **kwargs):
+                self.calls.append(kwargs)
+                return CockpitDeliveryReceipt(
+                    None, "deferred", delivered=False, reason="cockpit_active"
+                )
+
+        client = DeferredClient()
+        bridge = CockpitBridge(CockpitConfig(THREAD_ID), client, self.state)
+        result = bridge.publish(tick())
+        self.assertFalse(result["delivered"])
+        self.assertEqual(result["reason"], "cockpit_active")
+        self.assertEqual(self.state.cockpit_status()["pending_count"], 1)
 
 
 class StubAppServerClient(AppServerClient):
@@ -146,7 +162,7 @@ class StubAppServerClient(AppServerClient):
 
 
 class AppServerCockpitTests(unittest.TestCase):
-    def test_active_cockpit_uses_steer_with_exact_turn_precondition(self) -> None:
+    def test_active_cockpit_defers_without_mutating_the_turn(self) -> None:
         client = StubAppServerClient(
             [{"id": THREAD_ID, "name": "SUPERVISOR AGENT", "status": {"type": "active"}}],
             [{"id": "active-turn", "status": "inProgress"}],
@@ -156,11 +172,11 @@ class AppServerCockpitTests(unittest.TestCase):
             expected_title="SUPERVISOR AGENT",
             message="automated",
             client_message_id="message-1",
+            reasoning_effort="xhigh",
         )
-        self.assertEqual(receipt.transport, "turn/steer")
-        method, params = client.requests[-1]
-        self.assertEqual(method, "turn/steer")
-        self.assertEqual(params["expectedTurnId"], "active-turn")
+        self.assertFalse(receipt.delivered)
+        self.assertEqual(receipt.reason, "cockpit_active")
+        self.assertEqual(client.requests, [])
 
     def test_idle_cockpit_resumes_then_starts_a_turn(self) -> None:
         client = StubAppServerClient(
@@ -171,11 +187,13 @@ class AppServerCockpitTests(unittest.TestCase):
             expected_title="SUPERVISOR AGENT",
             message="automated",
             client_message_id="message-1",
+            reasoning_effort="xhigh",
         )
         self.assertEqual(receipt.delivery_id, "new-turn")
         self.assertEqual(
             [method for method, _ in client.requests], ["thread/resume", "turn/start"]
         )
+        self.assertEqual(client.requests[-1][1]["effort"], "xhigh")
 
     def test_title_mismatch_fails_before_any_mutation(self) -> None:
         client = StubAppServerClient(
@@ -187,6 +205,7 @@ class AppServerCockpitTests(unittest.TestCase):
                 expected_title="SUPERVISOR AGENT",
                 message="automated",
                 client_message_id="message-1",
+                reasoning_effort="xhigh",
             )
         self.assertEqual(client.requests, [])
 
