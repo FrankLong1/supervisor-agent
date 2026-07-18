@@ -34,6 +34,38 @@ uv run codex-unread-supervisor status
 uv run codex-unread-supervisor canary-readiness
 ```
 
+## Interactive provider manager
+
+The package also provides `supervisor`, a human-operated terminal manager for
+interactive Codex and Claude sessions. It is separate from the unattended
+`codex-unread-supervisor` service: it never inspects or replies to unread
+Codex tasks.
+
+Install both commands for the current user (including an idempotent Zsh PATH
+and alias block) with:
+
+```bash
+./scripts/install-supervisor.sh
+```
+
+Then use the manager from a workspace:
+
+```bash
+supervisor codex
+supervisor claude --task "Review the current task and propose the next step"
+supervisor status
+supervisor stop
+supervisor doctor
+```
+
+`supervisor codex` and `supervisor claude` check the provider's official CLI
+login status and start that provider's official login flow if needed. `status`
+is the terminal UI for active interactive sessions; use `--once` or `--json`
+for a one-shot/scriptable view. `stop` validates the stored process identity
+before signalling its process group, and session metadata plus lifecycle logs
+are preserved under `$XDG_STATE_HOME/codex-supervisor-manager` (or
+`~/.local/state/codex-supervisor-manager`).
+
 State is outside the checkout at `$XDG_STATE_HOME/demo-agent-supervisor/state.sqlite3`, defaulting to `~/.local/state/demo-agent-supervisor/state.sqlite3`. It contains terminal human-review markers, per-task supervisor session IDs, shadow-decision audit records, delivery claims, and canary evidence bindings.
 
 `scan-once` runs one shadow-only cycle. The local Fable CLI's model, session creation/resume, and tools-disabled invocation were verified before it was wired. It never replies to Codex in this mode.

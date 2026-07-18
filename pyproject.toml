@@ -12,6 +12,7 @@ license = {text = "MIT"}
 
 [project.scripts]
 codex-unread-supervisor = "codex_supervisor.cli:main"
+supervisor = "codex_supervisor.manager_cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
