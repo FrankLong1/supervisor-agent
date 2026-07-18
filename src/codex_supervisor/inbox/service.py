@@ -157,6 +157,59 @@ class InboxService:
             )
         return self._claim_and_handle()
 
+    def send_task(
+        self,
+        *,
+        recipient_address: str,
+        subject: str,
+        body_text: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        self.config.require_live_identity()
+        authenticated_identity = self._identity()
+        sender_address = (self.config.agent_address or "").strip()
+        recipient_address = recipient_address.strip()
+        subject = subject.strip()
+        if not sender_address:
+            raise ValueError("sending tasks requires SUPERVISOR_INBOX_AGENT_ADDRESS")
+        if not recipient_address or len(recipient_address) > 320:
+            raise ValueError("recipient address must be between 1 and 320 characters")
+        if recipient_address.casefold() == sender_address.casefold():
+            raise ValueError(
+                "refusing to send a shared inbox task to the configured sender"
+            )
+        if not subject or len(subject) > 500:
+            raise ValueError("task subject must be between 1 and 500 characters")
+        if not body_text.strip() or len(body_text.encode("utf-8")) > 65536:
+            raise ValueError("task body must be non-empty and at most 65536 bytes")
+        if not idempotency_key or len(idempotency_key) > 200:
+            raise ValueError("idempotency key must be between 1 and 200 characters")
+        receipt = self.adapter.send_message(
+            sender_agent_id=self.config.agent_id,
+            recipient_address=recipient_address,
+            kind=MessageKind.TASK_PROPOSAL,
+            subject=subject,
+            body_text=body_text,
+            body_json={
+                "format": "shared-inbox-task/v0",
+                "sender_agent_address": sender_address,
+            },
+            idempotency_key=idempotency_key,
+        )
+        return {
+            "queued": True,
+            "created": receipt.created,
+            "kind": MessageKind.TASK_PROPOSAL.value,
+            "authenticated_identity": authenticated_identity,
+            "sender_agent_id": self.config.agent_id,
+            "sender_address": sender_address,
+            "recipient_address": recipient_address,
+            "message_id": receipt.message_id,
+            "delivery_id": receipt.delivery_id,
+            "thread_id": receipt.resolved_thread_id,
+            "accepted_by_recipient": False,
+        }
+
     def _identity(self) -> str:
         identity = self.adapter.authenticated_identity()
         if not isinstance(identity, str) or not identity.strip():

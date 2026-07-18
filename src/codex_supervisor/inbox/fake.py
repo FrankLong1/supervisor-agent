@@ -66,10 +66,18 @@ class FakeInboxAdapter:
         self.sends.append(dict(kwargs))
         if self.fail_at == "send":
             raise RuntimeError("send ambiguous")
-        envelope = self.claim.envelope if self.claim else self.envelopes[0]
+        envelope = (
+            self.claim.envelope
+            if self.claim
+            else (self.envelopes[0] if self.envelopes else None)
+        )
         return SendReceipt(
             message_id="00000000-0000-0000-0000-000000000901",
             delivery_id="00000000-0000-0000-0000-000000000902",
-            resolved_thread_id=envelope.thread_id,
+            resolved_thread_id=(
+                envelope.thread_id
+                if envelope
+                else "00000000-0000-0000-0000-000000000903"
+            ),
             created=True,
         )

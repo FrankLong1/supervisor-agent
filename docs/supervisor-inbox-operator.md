@@ -58,3 +58,20 @@ The PostgreSQL client calls only `inbox_list_deliveries`,
 `inbox_claim_next_delivery`, `inbox_mark_received`,
 `inbox_complete_delivery`, and `inbox_send_message` in the configured schema.
 It performs no raw mailbox table DML.
+
+## Sending a task between workstations
+
+Use the repository skill at
+`.agents/skills/send-shared-inbox-task/SKILL.md`. Its resolver maps Alice's
+`alice@` workstation to `research@alice`, and Frank's `frank@` workstation
+(whose agent is Bob) to `helper@bob`. It rejects unknown or self recipients and
+submits only an idempotent `TASK_PROPOSAL` through `inbox_send_message`.
+
+```bash
+uv run python .agents/skills/send-shared-inbox-task/scripts/send_task.py \
+  --to alice --subject "Investigate the import" --body-file /tmp/task.txt
+```
+
+A successful result means queued, not accepted. The recipient's supervisor
+routes every `TASK_PROPOSAL` to `NEEDS_HUMAN` until an explicit acceptance
+workflow is implemented.

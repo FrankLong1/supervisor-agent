@@ -1,0 +1,4 @@
+interface:
+  display_name: "Send Shared Inbox Task"
+  short_description: "Queue a task for Alice or Frank/Bob safely"
+  default_prompt: "Use $send-shared-inbox-task to queue this task for the correct other workstation agent."

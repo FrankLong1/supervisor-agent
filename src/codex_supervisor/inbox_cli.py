@@ -14,13 +14,19 @@ from .state import SupervisorState, default_state_path
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description="One-shot shared inbox supervisor")
     command.add_argument(
-        "command", choices=("status", "scan-once", "canary", "run-once")
+        "command",
+        choices=("status", "scan-once", "canary", "run-once", "send-task"),
     )
     command.add_argument("--state-path", type=Path, default=default_state_path())
     command.add_argument("--limit", type=int, default=20)
     command.add_argument("--check-connection", action="store_true")
     command.add_argument("--delivery-id")
     command.add_argument("--sender-observed-reply-id")
+    command.add_argument("--recipient-address")
+    command.add_argument("--subject")
+    command.add_argument("--body-text")
+    command.add_argument("--body-file", type=Path)
+    command.add_argument("--idempotency-key")
     return command
 
 
@@ -81,8 +87,35 @@ def main(argv: list[str] | None = None) -> int:
             if not args.delivery_id:
                 raise ValueError("canary requires --delivery-id")
             result = service.canary(args.delivery_id, args.sender_observed_reply_id)
-        else:
+        elif args.command == "run-once":
             result = service.run_once()
+        else:
+            if (
+                not args.recipient_address
+                or not args.subject
+                or not args.idempotency_key
+            ):
+                raise ValueError(
+                    "send-task requires --recipient-address, --subject, and --idempotency-key"
+                )
+            if bool(args.body_text) == bool(args.body_file):
+                raise ValueError(
+                    "send-task requires exactly one of --body-text or --body-file"
+                )
+            try:
+                body_text = (
+                    args.body_file.read_text(encoding="utf-8")
+                    if args.body_file
+                    else args.body_text
+                )
+            except (OSError, UnicodeError) as error:
+                raise ValueError("task body file is not readable UTF-8") from error
+            result = service.send_task(
+                recipient_address=args.recipient_address,
+                subject=args.subject,
+                body_text=body_text,
+                idempotency_key=args.idempotency_key,
+            )
         print(json.dumps(result, sort_keys=True))
         if args.command == "canary" and not result.get("canary_enrolled"):
             return 1

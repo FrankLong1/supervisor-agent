@@ -78,6 +78,7 @@ class InboxTests(unittest.TestCase):
             dsn="postgresql://user:secret@localhost/agent_inbox?token=hidden",
             instance_id="stable-instance",
             agent_id=IDS["recipient"],
+            agent_address="helper@bob",
         )
 
     def tearDown(self) -> None:
@@ -416,6 +417,47 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(adapter.received, [(IDS["delivery"], "stable-instance")])
         self.assertEqual(adapter.completions[0][2], InboxOutcome.NOT_UNDERSTOOD)
         self.assertNotIn("body", str(self.state.inbox_processing(IDS["delivery"])))
+
+    def test_send_task_queues_only_a_task_proposal_with_attributed_sender(self) -> None:
+        adapter = FakeInboxAdapter()
+        service = InboxService(self.config, adapter, self.state)
+        result = service.send_task(
+            recipient_address="research@alice",
+            subject="Review the bounded fixture",
+            body_text="Please inspect the fixture and report the result.",
+            idempotency_key="skill-task:stable-key",
+        )
+        self.assertTrue(result["queued"])
+        self.assertFalse(result["accepted_by_recipient"])
+        self.assertEqual(adapter.sends[0]["kind"], MessageKind.TASK_PROPOSAL)
+        self.assertEqual(adapter.sends[0]["sender_agent_id"], IDS["recipient"])
+        self.assertEqual(adapter.sends[0]["recipient_address"], "research@alice")
+        self.assertEqual(adapter.sends[0]["idempotency_key"], "skill-task:stable-key")
+
+    def test_send_task_rejects_self_addressing_and_missing_sender_address(self) -> None:
+        adapter = FakeInboxAdapter()
+        service = InboxService(self.config, adapter, self.state)
+        with self.assertRaisesRegex(ValueError, "configured sender"):
+            service.send_task(
+                recipient_address="helper@bob",
+                subject="No self-send",
+                body_text="This must not be queued.",
+                idempotency_key="self-send",
+            )
+        config = InboxConfig(
+            mode=InboxMode.ONE_SHOT,
+            dsn="unused",
+            instance_id="stable-instance",
+            agent_id=IDS["recipient"],
+        )
+        with self.assertRaisesRegex(ValueError, "AGENT_ADDRESS"):
+            InboxService(config, adapter, self.state).send_task(
+                recipient_address="research@alice",
+                subject="Missing attribution",
+                body_text="This must not be queued.",
+                idempotency_key="missing-address",
+            )
+        self.assertEqual(adapter.sends, [])
 
 
 if __name__ == "__main__":
