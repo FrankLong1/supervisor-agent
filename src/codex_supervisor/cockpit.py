@@ -57,6 +57,7 @@ def safe_status_snapshot(
         blockers.append("local Codex app-server poll is unhealthy")
     elif local.get("unread_supported") is not True:
         blockers.append("authoritative Codex hasUnreadTurn signal is unavailable")
+    blockers.append("generic local Codex task mutation is disabled by supervisor policy")
     if inbox.get("ok") is not True:
         blockers.append("Cloud SQL inbox poll is unhealthy")
     elif (

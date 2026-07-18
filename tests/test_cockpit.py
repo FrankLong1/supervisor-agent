@@ -90,6 +90,10 @@ class CockpitTests(unittest.TestCase):
             "authoritative Codex hasUnreadTurn signal is unavailable",
             snapshot["mutation_blockers"],
         )
+        self.assertIn(
+            "generic local Codex task mutation is disabled by supervisor policy",
+            snapshot["mutation_blockers"],
+        )
         self.assertIn("not a human-authored message", prompt)
         for secret in ("SECRET SUBJECT", "SECRET BODY", "SECRET DELIVERY"):
             self.assertNotIn(secret, prompt)
