@@ -34,6 +34,23 @@ The installer adds an idempotent Zsh PATH/alias block and includes the
 PostgreSQL client required by the repository shared-inbox skill. It does not
 start or enable a service.
 
+The shared workstation image separately bootstraps one durable Codex cockpit
+by default. After the local app-server becomes available, it adopts the single
+unarchived task titled `SUPERVISOR AGENT` or creates one with an explicit
+workspace, writes its UUID to
+`~/.config/codex-unread-supervisor/cockpit.env`, and starts the same foreground
+worker described below. `bootstrap-cockpit` is idempotent and fails closed if
+more than one matching task exists or a bound task has been renamed.
+
+```bash
+codex-unread-supervisor bootstrap-cockpit \
+  --workspace "$HOME/supervisor-agent"
+```
+
+The workstation owner can select `SUPERVISOR_PROVIDER=claude` or `disabled` in
+`~/.config/codex-unread-supervisor/startup.env`; the image launcher then leaves
+Codex stopped so a user-owned Claude supervisor can replace it.
+
 For development:
 
 ```bash

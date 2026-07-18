@@ -67,6 +67,18 @@ types, never DSNs or message bodies.
 
 ## Durable Codex cockpit bridge
 
+The workstation default is one durable Codex cockpit per user. The image
+launcher runs `bootstrap-cockpit` after the local app-server is reachable. The
+command adopts exactly one existing unarchived `SUPERVISOR AGENT` task or
+creates, names, initializes, and atomically binds one new task. It persists only
+the task UUID in `~/.config/codex-unread-supervisor/cockpit.env`; retries recover
+a partially created bound task instead of creating a duplicate.
+
+To replace the default with Claude, set `SUPERVISOR_PROVIDER=claude` in
+`~/.config/codex-unread-supervisor/startup.env`, stop the image-owned worker,
+and launch the user-owned Claude supervisor. The next boot honors the provider
+selection and does not recreate a Codex cockpit.
+
 Set `SUPERVISOR_COCKPIT_THREAD_ID` in the same mode-`0600` environment file to
 the UUID of the one durable Codex task titled exactly `SUPERVISOR AGENT`. The
 existing combined worker then publishes an update only when its allowlisted

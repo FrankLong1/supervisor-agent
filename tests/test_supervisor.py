@@ -542,6 +542,10 @@ class Tests(unittest.TestCase):
         self.assertIn(
             "EnvironmentFile=-%h/.config/codex-unread-supervisor/inbox.env", worker
         )
+        self.assertIn(
+            "EnvironmentFile=-%h/.config/codex-unread-supervisor/cockpit.env",
+            worker,
+        )
         console = units[f"{CONSOLE_SERVICE_NAME}.service"]
         self.assertIn("console --state-path", console)
         self.assertIn(
@@ -555,9 +559,7 @@ class Tests(unittest.TestCase):
             ticks.append((kwargs["local_poll"](), kwargs["inbox_poll"]()))
 
         with (
-            patch.dict(
-                os.environ, {"SUPERVISOR_INBOX_MODE": "disabled"}, clear=True
-            ),
+            patch.dict(os.environ, {"SUPERVISOR_INBOX_MODE": "disabled"}, clear=True),
             patch("codex_supervisor.cli.signal.signal"),
             patch("codex_supervisor.cli.AppServerClient") as client_type,
             patch("codex_supervisor.cli.run_worker", side_effect=run_combined),

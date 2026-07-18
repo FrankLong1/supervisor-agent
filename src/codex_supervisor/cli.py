@@ -6,10 +6,11 @@ import signal
 import sys
 from pathlib import Path
 
+from .bootstrap import ensure_codex_cockpit
 from .claude import ConservativeClaude
 from .cockpit import CockpitBridge, CockpitConfig
 from .console import serve as serve_console
-from .codex import AppServerClient
+from .codex import AppServerClient, AppServerError
 from .health import exit_code, report
 from .human_review_queue import render_markdown
 from .inbox.config import InboxConfig, InboxMode
@@ -46,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
             "reset-human-review",
             "doctor",
             "watchdog",
+            "bootstrap-cockpit",
             "serve",
             "service-install",
             "service-status",
@@ -60,6 +62,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--host-id", default="local")
     parser.add_argument("--thread-id")
+    parser.add_argument(
+        "--binding-path",
+        type=Path,
+        default=Path.home() / ".config/codex-unread-supervisor/cockpit.env",
+    )
+    parser.add_argument("--workspace", type=Path, default=Path.home())
+    parser.add_argument("--reasoning-effort", default="xhigh")
     parser.add_argument("--inventory-snapshot", type=Path)
     parser.add_argument("--interval", type=float, default=30.0)
     parser.add_argument("--grace", type=float, default=30.0)
@@ -76,6 +85,36 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.interval <= 0 or args.grace < 0:
         parser.error("--interval must be positive and --grace cannot be negative")
+
+    if args.command == "bootstrap-cockpit":
+        try:
+            binding = ensure_codex_cockpit(
+                AppServerClient(args.socket_path),
+                workspace=args.workspace,
+                binding_path=args.binding_path,
+                reasoning_effort=args.reasoning_effort,
+            )
+        except (OSError, ValueError, AppServerError) as error:
+            print(
+                json.dumps(
+                    {"ready": False, "error_type": type(error).__name__},
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            json.dumps(
+                {
+                    "created": binding.created,
+                    "ready": True,
+                    "thread_id": binding.thread_id,
+                    "workspace": str(binding.workspace),
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
 
     if args.command in {"doctor", "watchdog"}:
         report_data = report(args.state_path, args.socket_path, args.grace)
@@ -105,9 +144,7 @@ def main(argv: list[str] | None = None) -> int:
             inbox_config.mode is not InboxMode.DISABLED
             and float(inbox_config.poll_seconds) != args.interval
         ):
-            parser.error(
-                "serve --interval must match SUPERVISOR_INBOX_POLL_SECONDS"
-            )
+            parser.error("serve --interval must match SUPERVISOR_INBOX_POLL_SECONDS")
         stopping = False
 
         def request_stop(_signum, _frame):
@@ -132,9 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         def inbox_poll() -> dict[str, object]:
             if inbox_config.mode is InboxMode.DISABLED:
                 return {"configured": False, "mode": inbox_config.mode.value}
-            adapter = PostgresInboxAdapter(
-                inbox_config.dsn, schema=inbox_config.schema
-            )
+            adapter = PostgresInboxAdapter(inbox_config.dsn, schema=inbox_config.schema)
             try:
                 service = InboxService(inbox_config, adapter, state)
                 if inbox_config.mode is InboxMode.DRY_RUN:

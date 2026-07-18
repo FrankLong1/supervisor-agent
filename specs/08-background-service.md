@@ -7,6 +7,13 @@ placing the existing worker under one user service manager.
 
 This plan does not daemonize interactive Codex or Claude terminals.
 
+The shared workstation image uses its existing tmux-backed startup supervisor
+because that runtime does not expose a dependable `systemd --user` bus during
+image startup. It must still run the same single foreground `serve` worker,
+hold the same worker lease, and honor the provider opt-out. The systemd units
+remain the supported installation path on hosts with a real user service
+manager and read both `inbox.env` and `cockpit.env`.
+
 ## Service contract
 
 ```text
