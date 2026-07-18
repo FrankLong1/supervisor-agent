@@ -95,12 +95,29 @@ class InboxService:
                 "reply_message_id": sender_observed_reply_id,
             }
         if existing is not None:
+            reply_message_id = existing["reply_message_id"]
+            enrolled = bool(
+                existing["local_status"] == "REPLIED"
+                and reply_message_id
+                and self.state.inbox_canary_delivery_matches(
+                    evidence_id=CANARY_EVIDENCE_ID,
+                    contract_version=self.adapter.contract_version,
+                    adapter_identity=self.adapter.adapter_identity,
+                    principal_identity=principal_identity,
+                    instance_id=self.config.instance_id,
+                    handler_identity=HANDLER_IDENTITY,
+                    delivery_id=expected_delivery_id,
+                    reply_message_id=reply_message_id,
+                )
+            )
             return {
-                "canary_enrolled": False,
+                "canary_enrolled": enrolled,
                 "delivery_id": expected_delivery_id,
                 "local_status": existing["local_status"],
-                "reply_message_id": existing["reply_message_id"],
-                "sender_verification_required": existing["local_status"] == "REPLIED",
+                "reply_message_id": reply_message_id,
+                "sender_verification_required": (
+                    existing["local_status"] == "REPLIED" and not enrolled
+                ),
             }
         queued = self.adapter.list_deliveries(1, "QUEUED")
         if len(queued) != 1 or queued[0].delivery_id != expected_delivery_id:

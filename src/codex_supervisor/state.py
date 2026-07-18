@@ -297,6 +297,17 @@ class SupervisorState:
         ).fetchone()
         return row is not None
 
+    def inbox_canary_delivery_matches(self, *, evidence_id: str, contract_version: str,
+                                      adapter_identity: str, principal_identity: str,
+                                      instance_id: str, handler_identity: str,
+                                      delivery_id: str, reply_message_id: str) -> bool:
+        row = self.db.execute(
+            "SELECT 1 FROM supervisor_inbox_canary_evidence WHERE evidence_id=? AND contract_version=? AND adapter_identity=? AND principal_identity=? AND instance_id=? AND handler_identity=? AND delivery_id=? AND reply_message_id=? AND revoked_at IS NULL",
+            (evidence_id, contract_version, adapter_identity, principal_identity,
+             instance_id, handler_identity, delivery_id, reply_message_id),
+        ).fetchone()
+        return row is not None
+
     def inbox_status(self) -> dict[str, int | str | None]:
         last = self.db.execute("SELECT value FROM supervisor_settings WHERE key='inbox_last_successful_poll'").fetchone()
         return {

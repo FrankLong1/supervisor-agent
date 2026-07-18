@@ -204,6 +204,10 @@ class InboxTests(unittest.TestCase):
             service.canary(item.delivery_id, IDS["message"])
         verified = service.canary(item.delivery_id, reply_id)
         self.assertTrue(verified["canary_enrolled"])
+        rechecked = service.canary(item.delivery_id)
+        self.assertTrue(rechecked["canary_enrolled"])
+        self.assertFalse(rechecked["sender_verification_required"])
+        self.assertEqual(len(adapter.sends), 1)
         self.assertTrue(
             self.state.inbox_canary_matches(
                 evidence_id=CANARY_EVIDENCE_ID,
