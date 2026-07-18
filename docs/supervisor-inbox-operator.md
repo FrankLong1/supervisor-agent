@@ -66,14 +66,18 @@ Use the repository skill at
 the actual Google users `alice@gravitationalventures.com` and
 `frank@gravitationalventures.com`; the retired synthetic Alice/Bob service
 accounts are not valid deployment identities. Agent addresses and UUIDs remain
-separate deployment outputs. Configure the four directory variables documented
-in the skill reference. Its resolver rejects incomplete, unknown, duplicate, or
-self mappings and submits only an idempotent `TASK_PROPOSAL` through
-`inbox_send_message`.
+fixed v0 deployment outputs: Alice is
+`alice@gravitationalventures.com` / `7a3fa6fa-2f49-42c9-bb6a-d4a9eafed720`
+and Frank is `frank@gravitationalventures.com` /
+`fa212e75-7581-457b-a918-4ac8bc617bbc`. The same email is the agent address and
+authenticated PostgreSQL `session_user`; no other address aliases are accepted.
+The resolver rejects unknown, stale, partial, or self mappings and submits only
+an idempotent `TASK_PROPOSAL` through `inbox_send_message`.
 
 ```bash
 uv run python .agents/skills/send-shared-inbox-task/scripts/send_task.py \
-  --to alice --subject "Investigate the import" --body-file /tmp/task.txt
+  --to alice@gravitationalventures.com \
+  --subject "Investigate the import" --body-file /tmp/task.txt
 ```
 
 A successful result means queued, not accepted. The recipient's supervisor

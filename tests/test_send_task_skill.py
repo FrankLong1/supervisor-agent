@@ -22,53 +22,37 @@ SPEC.loader.exec_module(MODULE)
 
 ALICE_ID = "7a3fa6fa-2f49-42c9-bb6a-d4a9eafed720"
 FRANK_ID = "fa212e75-7581-457b-a918-4ac8bc617bbc"
-DIRECTORY_ENV = {
-    "SUPERVISOR_INBOX_ALICE_AGENT_ADDRESS": "agent@alice",
-    "SUPERVISOR_INBOX_ALICE_AGENT_ID": ALICE_ID,
-    "SUPERVISOR_INBOX_FRANK_AGENT_ADDRESS": "agent@frank",
-    "SUPERVISOR_INBOX_FRANK_AGENT_ID": FRANK_ID,
-}
+ALICE = "alice@gravitationalventures.com"
+FRANK = "frank@gravitationalventures.com"
 
 
 class SendTaskSkillTests(unittest.TestCase):
     def test_directory_resolves_only_the_other_workstation(self) -> None:
-        directory = MODULE.configured_directory(DIRECTORY_ENV)
-        sender, recipient = MODULE.resolve(
-            "agent@alice", ALICE_ID, "frank", directory
-        )
-        self.assertEqual(sender, "alice")
-        self.assertEqual(recipient["address"], "agent@frank")
-        sender, recipient = MODULE.resolve(
-            "agent@frank", FRANK_ID, "alice@gravitationalventures.com", directory
-        )
-        self.assertEqual(sender, "frank")
-        self.assertEqual(recipient["address"], "agent@alice")
+        sender, recipient = MODULE.resolve(ALICE, ALICE_ID, FRANK)
+        self.assertEqual(sender, ALICE)
+        self.assertEqual(recipient["principal"], FRANK)
+        sender, recipient = MODULE.resolve(FRANK, FRANK_ID, ALICE)
+        self.assertEqual(sender, FRANK)
+        self.assertEqual(recipient["principal"], ALICE)
         with self.assertRaisesRegex(ValueError, "sender itself"):
-            MODULE.resolve("agent@alice", ALICE_ID, "alice", directory)
+            MODULE.resolve(ALICE, ALICE_ID, ALICE)
         with self.assertRaisesRegex(ValueError, "do not identify"):
-            MODULE.resolve("agent@alice", FRANK_ID, "frank", directory)
+            MODULE.resolve(ALICE, FRANK_ID, FRANK)
 
-    def test_directory_requires_complete_distinct_deployment_outputs(self) -> None:
-        missing_frank_address = dict(DIRECTORY_ENV)
-        del missing_frank_address["SUPERVISOR_INBOX_FRANK_AGENT_ADDRESS"]
-        with self.assertRaisesRegex(ValueError, "FRANK_AGENT_ADDRESS"):
-            MODULE.configured_directory(missing_frank_address)
-        duplicated = {
-            **DIRECTORY_ENV,
-            "SUPERVISOR_INBOX_FRANK_AGENT_ADDRESS": "agent@alice",
-        }
-        with self.assertRaisesRegex(ValueError, "addresses must be distinct"):
-            MODULE.configured_directory(duplicated)
+    def test_directory_contains_only_fixed_real_user_addresses(self) -> None:
+        self.assertEqual(set(MODULE.DIRECTORY), {ALICE, FRANK})
+        self.assertNotIn("alice", MODULE.DIRECTORY)
+        self.assertNotIn("frank@", MODULE.DIRECTORY)
 
     def test_stable_key_is_content_bound(self) -> None:
-        first = MODULE.stable_key("agent@alice", "agent@frank", "Subject", "Body")
+        first = MODULE.stable_key(ALICE, FRANK, "Subject", "Body")
         self.assertEqual(
             first,
-            MODULE.stable_key("agent@alice", "agent@frank", "Subject", "Body"),
+            MODULE.stable_key(ALICE, FRANK, "Subject", "Body"),
         )
         self.assertNotEqual(
             first,
-            MODULE.stable_key("agent@alice", "agent@frank", "Subject", "Other"),
+            MODULE.stable_key(ALICE, FRANK, "Subject", "Other"),
         )
         self.assertLessEqual(len(first), 200)
 
@@ -81,8 +65,7 @@ class SendTaskSkillTests(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    **DIRECTORY_ENV,
-                    "SUPERVISOR_INBOX_AGENT_ADDRESS": "agent@frank",
+                    "SUPERVISOR_INBOX_AGENT_ADDRESS": FRANK,
                     "SUPERVISOR_INBOX_AGENT_ID": FRANK_ID,
                 },
                 clear=True,
@@ -93,7 +76,7 @@ class SendTaskSkillTests(unittest.TestCase):
             code = MODULE.main(
                 [
                     "--to",
-                    "alice",
+                    ALICE,
                     "--subject",
                     "Investigate fixture",
                     "--body-text",
@@ -106,7 +89,7 @@ class SendTaskSkillTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[:3], ["/opt/bin/supervisor", "inbox", "send-task"])
         self.assertEqual(
-            command[command.index("--recipient-address") + 1], "agent@alice"
+            command[command.index("--recipient-address") + 1], ALICE
         )
         self.assertIn("--body-file", command)
         self.assertNotIn("Inspect and report.", command)
@@ -118,8 +101,7 @@ class SendTaskSkillTests(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    **DIRECTORY_ENV,
-                    "SUPERVISOR_INBOX_AGENT_ADDRESS": "agent@alice",
+                    "SUPERVISOR_INBOX_AGENT_ADDRESS": ALICE,
                     "SUPERVISOR_INBOX_AGENT_ID": ALICE_ID,
                 },
                 clear=True,
@@ -130,7 +112,7 @@ class SendTaskSkillTests(unittest.TestCase):
             code = MODULE.main(
                 [
                     "--to",
-                    "frank@",
+                    FRANK,
                     "--subject",
                     "Bounded task",
                     "--body-text",
@@ -140,7 +122,7 @@ class SendTaskSkillTests(unittest.TestCase):
             )
         self.assertEqual(code, 0)
         projection = json.loads(output.getvalue())
-        self.assertEqual(projection["recipient_address"], "agent@frank")
+        self.assertEqual(projection["recipient_address"], FRANK)
         self.assertEqual(
             projection["sender_principal"], "alice@gravitationalventures.com"
         )
@@ -155,8 +137,7 @@ class SendTaskSkillTests(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    **DIRECTORY_ENV,
-                    "SUPERVISOR_INBOX_AGENT_ADDRESS": "agent@alice",
+                    "SUPERVISOR_INBOX_AGENT_ADDRESS": ALICE,
                     "SUPERVISOR_INBOX_AGENT_ID": ALICE_ID,
                 },
                 clear=True,
@@ -167,7 +148,7 @@ class SendTaskSkillTests(unittest.TestCase):
             code = MODULE.main(
                 [
                     "--to",
-                    "alice",
+                    ALICE,
                     "--subject",
                     "Self task",
                     "--body-text",

@@ -11,18 +11,17 @@ Use the bundled resolver; never type or infer a recipient address independently.
 2. Require an explicit task subject and actionable body. Preserve constraints,
    expected result, relevant paths/links, and completion checks. Do not include
    credentials or tokens.
-3. Require the four deployment-provided directory variables described in
-   `references/directory.md`. Never recover retired synthetic identities from
-   logs, prior output, or repository history.
+3. Read the fixed v0 directory in `references/directory.md`. Never recover
+   retired synthetic identities from logs, prior output, or repository history.
 4. Verify `SUPERVISOR_INBOX_AGENT_ADDRESS` and `SUPERVISOR_INBOX_AGENT_ID`
    jointly identify the sending workstation. Stop on a partial or ambiguous match.
-5. Resolve `--to` through `scripts/send_task.py`. Accept Alice or Frank's short
-   name, workstation alias, or full Google email; reject unknown and self recipients.
+5. Resolve a human request for Alice or Frank to the exact full Google email.
+   Pass only that email to `scripts/send_task.py`; v0 accepts no other aliases.
 6. Run from the repository root. Prefer `--body-file` for multiline tasks:
 
 ```bash
 uv run python .agents/skills/send-shared-inbox-task/scripts/send_task.py \
-  --to alice \
+  --to alice@gravitationalventures.com \
   --subject "Investigate the failed import" \
   --body-file /tmp/shared-inbox-task.txt
 ```
