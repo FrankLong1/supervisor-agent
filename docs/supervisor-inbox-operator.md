@@ -62,10 +62,14 @@ It performs no raw mailbox table DML.
 ## Sending a task between workstations
 
 Use the repository skill at
-`.agents/skills/send-shared-inbox-task/SKILL.md`. Its resolver maps Alice's
-`alice@` workstation to `research@alice`, and Frank's `frank@` workstation
-(whose agent is Bob) to `helper@bob`. It rejects unknown or self recipients and
-submits only an idempotent `TASK_PROPOSAL` through `inbox_send_message`.
+`.agents/skills/send-shared-inbox-task/SKILL.md`. The two runtime principals are
+the actual Google users `alice@gravitationalventures.com` and
+`frank@gravitationalventures.com`; the retired synthetic Alice/Bob service
+accounts are not valid deployment identities. Agent addresses and UUIDs remain
+separate deployment outputs. Configure the four directory variables documented
+in the skill reference. Its resolver rejects incomplete, unknown, duplicate, or
+self mappings and submits only an idempotent `TASK_PROPOSAL` through
+`inbox_send_message`.
 
 ```bash
 uv run python .agents/skills/send-shared-inbox-task/scripts/send_task.py \

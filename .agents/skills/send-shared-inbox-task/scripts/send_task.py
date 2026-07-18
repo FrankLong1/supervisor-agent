@@ -10,24 +10,28 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from uuid import UUID
 
 
-DIRECTORY = {
-    "research@alice": {
-        "owner": "alice@",
-        "agent_id": "7a3fa6fa-2f49-42c9-bb6a-d4a9eafed720",
+ACTORS = {
+    "alice": {
+        "principal": "alice@gravitationalventures.com",
+        "address_env": "SUPERVISOR_INBOX_ALICE_AGENT_ADDRESS",
+        "id_env": "SUPERVISOR_INBOX_ALICE_AGENT_ID",
     },
-    "helper@bob": {
-        "owner": "frank@",
-        "agent_id": "fa212e75-7581-457b-a918-4ac8bc617bbc",
+    "frank": {
+        "principal": "frank@gravitationalventures.com",
+        "address_env": "SUPERVISOR_INBOX_FRANK_AGENT_ADDRESS",
+        "id_env": "SUPERVISOR_INBOX_FRANK_AGENT_ID",
     },
 }
 ALIASES = {
-    "alice": "research@alice",
-    "alice@": "research@alice",
-    "frank": "helper@bob",
-    "frank@": "helper@bob",
-    "bob": "helper@bob",
+    "alice": "alice",
+    "alice@": "alice",
+    "alice@gravitationalventures.com": "alice",
+    "frank": "frank",
+    "frank@": "frank",
+    "frank@gravitationalventures.com": "frank",
 }
 
 
@@ -63,16 +67,52 @@ def read_body(args: argparse.Namespace) -> str:
     return value
 
 
-def resolve(sender: str, target_alias: str) -> str:
-    sender = sender.strip().casefold()
-    if sender not in DIRECTORY:
+def configured_directory(env: dict[str, str]) -> dict[str, dict[str, str]]:
+    directory: dict[str, dict[str, str]] = {}
+    for name, actor in ACTORS.items():
+        address = env.get(actor["address_env"], "").strip().casefold()
+        agent_id = env.get(actor["id_env"], "").strip()
+        if not address or not agent_id:
+            raise ValueError(
+                f"{actor['address_env']} and {actor['id_env']} must be configured"
+            )
+        try:
+            UUID(agent_id)
+        except ValueError as error:
+            raise ValueError(f"{actor['id_env']} must be a UUID") from error
+        directory[name] = {
+            "principal": actor["principal"],
+            "address": address,
+            "agent_id": agent_id,
+        }
+    if directory["alice"]["address"] == directory["frank"]["address"]:
+        raise ValueError("Alice and Frank agent addresses must be distinct")
+    if directory["alice"]["agent_id"] == directory["frank"]["agent_id"]:
+        raise ValueError("Alice and Frank agent IDs must be distinct")
+    return directory
+
+
+def resolve(
+    sender_address: str,
+    sender_agent_id: str,
+    target_alias: str,
+    directory: dict[str, dict[str, str]],
+) -> tuple[str, dict[str, str]]:
+    sender_address = sender_address.strip().casefold()
+    senders = [
+        name
+        for name, actor in directory.items()
+        if actor["address"] == sender_address and actor["agent_id"] == sender_agent_id
+    ]
+    if len(senders) != 1:
         raise ValueError(
-            "SUPERVISOR_INBOX_AGENT_ADDRESS must be research@alice or helper@bob"
+            "configured sender address and agent ID do not identify Alice or Frank"
         )
-    recipient = ALIASES[target_alias.casefold()]
-    if recipient == sender:
+    sender = senders[0]
+    recipient_name = ALIASES[target_alias.casefold()]
+    if recipient_name == sender:
         raise ValueError("refusing to queue a shared inbox task to the sender itself")
-    return recipient
+    return sender, directory[recipient_name]
 
 
 def stable_key(sender: str, recipient: str, subject: str, body: str) -> str:
@@ -105,21 +145,27 @@ def supervisor_command(explicit: str | None) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        sender = os.environ.get("SUPERVISOR_INBOX_AGENT_ADDRESS", "").strip().casefold()
-        recipient = resolve(sender, args.to)
+        directory = configured_directory(dict(os.environ))
+        sender_address = os.environ.get("SUPERVISOR_INBOX_AGENT_ADDRESS", "")
+        sender_agent_id = os.environ.get("SUPERVISOR_INBOX_AGENT_ID", "")
+        sender, recipient = resolve(
+            sender_address, sender_agent_id, args.to, directory
+        )
         subject = args.subject.strip()
         if not subject or len(subject) > 500:
             raise ValueError("task subject must be between 1 and 500 characters")
         body = read_body(args)
-        key = args.idempotency_key or stable_key(sender, recipient, subject, body)
+        key = args.idempotency_key or stable_key(
+            directory[sender]["address"], recipient["address"], subject, body
+        )
         if not key or len(key) > 200:
             raise ValueError("idempotency key must be between 1 and 200 characters")
         projection = {
-            "sender_address": sender,
-            "sender_owner": DIRECTORY[sender.casefold()]["owner"],
-            "recipient_address": recipient,
-            "recipient_owner": DIRECTORY[recipient]["owner"],
-            "recipient_agent_id": DIRECTORY[recipient]["agent_id"],
+            "sender_address": directory[sender]["address"],
+            "sender_principal": directory[sender]["principal"],
+            "recipient_address": recipient["address"],
+            "recipient_principal": recipient["principal"],
+            "recipient_agent_id": recipient["agent_id"],
             "kind": "TASK_PROPOSAL",
             "subject": subject,
             "body_bytes": len(body.encode("utf-8")),
@@ -139,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                 "inbox",
                 "send-task",
                 "--recipient-address",
-                recipient,
+                recipient["address"],
                 "--subject",
                 subject,
                 "--body-file",
