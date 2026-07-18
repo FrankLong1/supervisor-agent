@@ -1,5 +1,9 @@
 # Supervisor dashboard UX plan
 
+> **Historical document.** Its useful UI ideas are retained, but current status
+> ownership, attention semantics, and mutation boundaries are defined by
+> [operator UI and alerts](../specs/10-operator-ui-and-alerts.md).
+
 ## Executive Summary
 
 - **Goal:** Make the localhost supervisor page understandable in seconds: what Fable is doing, what needs the human, and what just changed.

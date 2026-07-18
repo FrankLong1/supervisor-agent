@@ -1,5 +1,10 @@
 # Git closeout and remaining safety gates
 
+> **Historical document.** This describes the pre-cleanup shadow/non-shadow
+> design and is not an implementation plan. Use the ordered
+> [supervisor specs](../specs/README.md), beginning with plan 03, for current
+> behavior and next work.
+
 ## Current repository state
 
 - Dedicated branch: `codex/unread-task-supervisor`

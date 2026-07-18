@@ -1,5 +1,10 @@
 # Smoke And Behavior Test Plan
 
+> **Historical document.** Its proposed shadow-mode test organization predates
+> the simplified controller and dry-run command. Use the current
+> [supervisor specs](../specs/README.md) and the repository's existing test
+> suite as the implementation contract.
+
 ## Executive Summary
 
 - **Goal:** Add a fast, deterministic offline smoke suite for the supervisor, then make the existing behavioral coverage easier to maintain and extend.

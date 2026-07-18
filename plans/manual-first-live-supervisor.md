@@ -1,5 +1,10 @@
 # Manual-first live supervisor plan
 
+> **Historical document.** Do not implement its shadow/non-shadow rollout.
+> The replacement is the ordered sequence from
+> [authoritative unread feed](../specs/03-authoritative-unread-feed.md) through
+> [explicit continue-once](../specs/05-explicit-continue-once.md).
+
 ## Executive Summary
 
 - **Goal:** Prove a manual, shadow-mode Fable supervisor can safely evaluate Codex unread tasks before any reply delivery is considered.

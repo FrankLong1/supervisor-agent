@@ -16,9 +16,16 @@ recommendations without any automatic reply path.
 
 ## Implement later
 
-1. [Live replies and the canary gate](../specs/later/10-live-replies-and-canary.md)
-2. [Restart and recovery policy](../specs/later/11-restart-and-recovery.md)
-3. [Detached terminals, services, and richer UI](../specs/later/12-detached-services-and-ui.md)
+The remaining path is ordered and intentionally incremental:
+
+1. [Authoritative unread feed](../specs/03-authoritative-unread-feed.md)
+2. [Disposable canary](../specs/04-disposable-canary.md)
+3. [Explicit continue-once](../specs/05-explicit-continue-once.md)
+4. [Foreground unattended worker](../specs/06-unattended-worker.md)
+5. [Crash recovery and restart](../specs/07-recovery-and-restart.md)
+6. [Background user service](../specs/08-background-service.md)
+7. [Detached interactive sessions](../specs/09-detached-interactive-sessions.md)
+8. [Operator UI and alerts](../specs/10-operator-ui-and-alerts.md)
 
 See the [specs index](../specs/README.md) for vocabulary, order, and the first
 shipping command contract.

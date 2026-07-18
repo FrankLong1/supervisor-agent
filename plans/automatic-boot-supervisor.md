@@ -1,5 +1,10 @@
 # Automatic boot supervisor plan
 
+> **Historical document.** Do not enable the old heartbeat/shadow service from
+> this plan. Current background operation is specified by
+> [recovery and restart](../specs/07-recovery-and-restart.md) followed by the
+> [background user service](../specs/08-background-service.md).
+
 ## Executive Summary
 
 - **Goal:** Start the already-proven manual supervisor for the logged-in user and make its liveness observable without weakening reply safety.
