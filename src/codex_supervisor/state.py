@@ -94,6 +94,14 @@ class SupervisorState:
           instance_id TEXT NOT NULL, handler_identity TEXT NOT NULL,
           delivery_id TEXT NOT NULL, reply_message_id TEXT NOT NULL,
           recorded_at TEXT NOT NULL, revoked_at TEXT);
+        CREATE TABLE IF NOT EXISTS supervisor_cockpit_updates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          thread_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('PENDING','DELIVERED','SUPERSEDED')),
+          transport TEXT, delivery_id TEXT, last_error_type TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS supervisor_cockpit_updates_pending
+          ON supervisor_cockpit_updates(thread_id, status, id);
         """)
         columns = {str(row[1]) for row in self.db.execute("PRAGMA table_info(human_review_tasks)")}
         if "title" not in columns:
@@ -325,6 +333,67 @@ class SupervisorState:
             "active_canary_evidence_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_canary_evidence WHERE revoked_at IS NULL").fetchone()[0]),
         }
 
+    def observe_cockpit_update(self, *, thread_id: str, fingerprint: str) -> int | None:
+        row = self.db.execute(
+            "SELECT fingerprint FROM supervisor_cockpit_updates WHERE thread_id=? ORDER BY id DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        if row is not None and str(row[0]) == fingerprint:
+            return None
+        now = datetime.now(UTC).isoformat()
+        self.db.execute(
+            "UPDATE supervisor_cockpit_updates SET status='SUPERSEDED',updated_at=? WHERE thread_id=? AND status='PENDING'",
+            (now, thread_id),
+        )
+        cursor = self.db.execute(
+            "INSERT INTO supervisor_cockpit_updates(thread_id,fingerprint,status,created_at,updated_at) VALUES (?,?,'PENDING',?,?)",
+            (thread_id, fingerprint, now, now),
+        )
+        self.db.commit()
+        return int(cursor.lastrowid)
+
+    def pending_cockpit_update(self, thread_id: str) -> dict[str, str | int] | None:
+        row = self.db.execute(
+            "SELECT id,fingerprint FROM supervisor_cockpit_updates WHERE thread_id=? AND status='PENDING' ORDER BY id DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": int(row[0]), "fingerprint": str(row[1])}
+
+    def deliver_cockpit_update(
+        self, update_id: int, delivery_id: str | None, transport: str
+    ) -> None:
+        self.db.execute(
+            "UPDATE supervisor_cockpit_updates SET status='DELIVERED',transport=?,delivery_id=?,last_error_type=NULL,updated_at=? WHERE id=? AND status='PENDING'",
+            (transport[:32], delivery_id, datetime.now(UTC).isoformat(), update_id),
+        )
+        self.db.commit()
+
+    def fail_cockpit_update(self, update_id: int, error_type: str) -> None:
+        self.db.execute(
+            "UPDATE supervisor_cockpit_updates SET last_error_type=?,updated_at=? WHERE id=? AND status='PENDING'",
+            (error_type[:128], datetime.now(UTC).isoformat(), update_id),
+        )
+        self.db.commit()
+
+    def cockpit_status(self) -> dict[str, int | str | None]:
+        last = self.db.execute(
+            "SELECT status,transport,last_error_type,updated_at FROM supervisor_cockpit_updates ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return {
+            "update_count": int(
+                self.db.execute("SELECT count(*) FROM supervisor_cockpit_updates").fetchone()[0]
+            ),
+            "pending_count": int(
+                self.db.execute("SELECT count(*) FROM supervisor_cockpit_updates WHERE status='PENDING'").fetchone()[0]
+            ),
+            "last_status": None if last is None else str(last[0]),
+            "last_transport": None if last is None or last[1] is None else str(last[1]),
+            "last_error_type": None if last is None or last[2] is None else str(last[2]),
+            "last_updated_at": None if last is None else str(last[3]),
+        }
+
     def fable_turn_count(self, host_id: str, thread_id: str) -> int:
         return int(self.db.execute(
             "SELECT count(*) FROM supervisor_fable_turns WHERE host_id=? AND thread_id=?",
@@ -332,4 +401,18 @@ class SupervisorState:
         ).fetchone()[0])
 
     def status(self) -> dict[str, int | str | None]:
-        return {"state_path": str(self.path), "session_id": self.session_id(), "human_review_count": self.db.execute("SELECT count(*) FROM human_review_tasks").fetchone()[0], "dry_run_decision_count": self.db.execute("SELECT count(*) FROM supervisor_shadow_decisions").fetchone()[0], "pending_delivery_count": self.db.execute("SELECT count(*) FROM supervisor_delivery_claims WHERE status != 'CONFIRMED'").fetchone()[0]}
+        cockpit = self.cockpit_status()
+        return {
+            "state_path": str(self.path),
+            "session_id": self.session_id(),
+            "human_review_count": self.db.execute(
+                "SELECT count(*) FROM human_review_tasks"
+            ).fetchone()[0],
+            "dry_run_decision_count": self.db.execute(
+                "SELECT count(*) FROM supervisor_shadow_decisions"
+            ).fetchone()[0],
+            "pending_delivery_count": self.db.execute(
+                "SELECT count(*) FROM supervisor_delivery_claims WHERE status != 'CONFIRMED'"
+            ).fetchone()[0],
+            **{f"cockpit_{key}": value for key, value in cockpit.items()},
+        }

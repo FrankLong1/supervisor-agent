@@ -78,6 +78,7 @@ def run_worker(
     stop_requested: Callable[[], bool],
     local_poll: Callable[[], dict[str, Any]],
     inbox_poll: Callable[[], dict[str, Any]],
+    cockpit_update: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     clock: Callable[[], float] = time.monotonic,
     wait: Callable[[float], None] = time.sleep,
 ) -> None:
@@ -86,6 +87,11 @@ def run_worker(
     with WorkerLease(state_path):
         while not stop_requested():
             tick = combined_tick(local_poll, inbox_poll)
+            if cockpit_update is not None:
+                cockpit = _safe_tick("codex_cockpit", lambda: cockpit_update(tick))
+                tick["cockpit"] = cockpit
+                if not cockpit["ok"]:
+                    tick["result"] = "degraded"
             write_heartbeat(
                 state_path,
                 result=str(tick["result"]),

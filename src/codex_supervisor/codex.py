@@ -8,14 +8,23 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .models import DeliveryReceipt, TaskContext, ThreadCandidate, text_from_item
+from .models import (
+    CockpitDeliveryReceipt,
+    DeliveryReceipt,
+    TaskContext,
+    ThreadCandidate,
+    text_from_item,
+)
 
 
-class AppServerError(RuntimeError): pass
+class AppServerError(RuntimeError):
+    pass
 
 
 class AppServerClient:
     """App-server client using its documented local WebSocket transport."""
+    unread_supported = False
+
     def __init__(self, socket_path: str | Path, timeout_seconds: float = 10):
         self.socket_path, self.timeout_seconds, self._request_id = str(socket_path), timeout_seconds, 0
 
@@ -27,7 +36,8 @@ class AppServerClient:
             self._send(connection, {"method": "initialized"})
             self._send(connection, {"id": self._request_id, "method": method, "params": params})
             response = self._read_response(connection, self._request_id)
-        if "error" in response: raise AppServerError(str(response["error"]))
+        if "error" in response:
+            raise AppServerError(str(response["error"]))
         return response.get("result", {})
 
     def _connect(self) -> socket.socket:
@@ -117,7 +127,81 @@ class AppServerClient:
         return chunks
 
     def list_unarchived_threads(self) -> list[dict]:
-        return list(self.request("thread/list", {"archived": False, "useStateDbOnly": True}).get("data", []))
+        return list(
+            self.request(
+                "thread/list",
+                {"archived": False, "limit": 100, "useStateDbOnly": True},
+            ).get("data", [])
+        )
+
+    @staticmethod
+    def _turn_id(result: dict[str, Any]) -> str | None:
+        turn = result.get("turn")
+        value = turn.get("id") if isinstance(turn, dict) else None
+        value = value or result.get("turnId") or result.get("id")
+        return str(value) if value else None
+
+    def send_cockpit_update(
+        self,
+        *,
+        thread_id: str,
+        expected_title: str,
+        message: str,
+        client_message_id: str,
+    ) -> CockpitDeliveryReceipt:
+        """Send one explicitly automated update to an exact unarchived cockpit."""
+        matches = [
+            thread
+            for thread in self.list_unarchived_threads()
+            if thread.get("id") == thread_id
+        ]
+        if len(matches) != 1:
+            raise AppServerError("configured cockpit is not exactly one unarchived task")
+        thread = matches[0]
+        if thread.get("name") != expected_title:
+            raise AppServerError("configured cockpit title does not match")
+        status = thread.get("status")
+        status_type = status.get("type") if isinstance(status, dict) else None
+        input_items = [{"type": "text", "text": message}]
+        if status_type == "active":
+            context = self.request(
+                "thread/read", {"threadId": thread_id, "includeTurns": True}
+            ).get("thread", {})
+            turns = context.get("turns", []) if isinstance(context, dict) else []
+            active_turn_id = next(
+                (
+                    str(turn["id"])
+                    for turn in reversed(turns)
+                    if isinstance(turn, dict)
+                    and turn.get("status") == "inProgress"
+                    and turn.get("id")
+                ),
+                None,
+            )
+            if active_turn_id is None:
+                raise AppServerError("active cockpit has no verifiable in-progress turn")
+            result = self.request(
+                "turn/steer",
+                {
+                    "threadId": thread_id,
+                    "expectedTurnId": active_turn_id,
+                    "clientUserMessageId": client_message_id,
+                    "input": input_items,
+                },
+            )
+            return CockpitDeliveryReceipt(self._turn_id(result), "turn/steer")
+        if status_type != "idle":
+            raise AppServerError("configured cockpit is neither idle nor active")
+        self.request("thread/resume", {"threadId": thread_id})
+        result = self.request(
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "clientUserMessageId": client_message_id,
+                "input": input_items,
+            },
+        )
+        return CockpitDeliveryReceipt(self._turn_id(result), "turn/start")
 
     def read_context(self, candidate: ThreadCandidate, message_limit: int = 5) -> TaskContext:
         turns = self.request("thread/read", {"threadId": candidate.thread_id, "includeTurns": True}).get("thread", {}).get("turns", [])

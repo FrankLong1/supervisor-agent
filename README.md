@@ -136,6 +136,11 @@ rendered by `service-install` read the optional
 `~/.config/codex-unread-supervisor/inbox.env` file and remain disabled until the
 workstation startup/service owner enables them.
 
+When `SUPERVISOR_COCKPIT_THREAD_ID` names the one unarchived task titled
+`SUPERVISOR AGENT`, that same worker also sends edge-triggered, body-free status
+updates to the task through the documented Codex app-server turn APIs. See the
+operator guide for the fail-closed binding and audit details.
+
 ## Safety boundary and later work
 
 Cloud inbox mutation is limited to the deterministic handlers documented in

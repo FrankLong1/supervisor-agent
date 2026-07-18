@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .claude import ConservativeClaude
+from .cockpit import CockpitBridge, CockpitConfig
 from .console import serve as serve_console
 from .codex import AppServerClient
 from .health import exit_code, report
@@ -93,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("serve --interval must be between 5 and 300 seconds")
         try:
             inbox_config = InboxConfig.from_env()
+            cockpit_config = CockpitConfig.from_env()
         except ValueError as error:
             parser.error(str(error))
         if inbox_config.mode is InboxMode.ONE_SHOT:
@@ -116,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGINT, request_stop)
         client = AppServerClient(args.socket_path)
         state = SupervisorState(args.state_path)
+        cockpit = CockpitBridge(cockpit_config, client, state)
 
         def local_poll() -> dict[str, object]:
             scanned = UnreadScanner(client, args.host_id).scan()
@@ -152,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
                 stop_requested=lambda: stopping,
                 local_poll=local_poll,
                 inbox_poll=inbox_poll,
+                cockpit_update=cockpit.publish,
             )
         except RuntimeError as error:
             print(f"supervisor worker: {error}", file=sys.stderr)

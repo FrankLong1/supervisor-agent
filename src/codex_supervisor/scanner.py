@@ -21,6 +21,8 @@ class CodexAppSnapshotInventory:
     pass it to ``supervisor scan-once --inventory-snapshot``.
     """
 
+    unread_supported = True
+
     def __init__(self, path: Path, host_id: str):
         self.path = path
         self.host_id = host_id
@@ -84,6 +86,12 @@ class UnreadScanner:
         if self.inventory is None:
             return ScanResult(
                 (), False, "no read-only Codex thread-status inventory is configured"
+            )
+        if getattr(self.inventory, "unread_supported", None) is False:
+            return ScanResult(
+                (),
+                False,
+                "configured inventory does not expose authoritative hasUnreadTurn state",
             )
         try:
             threads = self.inventory.list_unarchived_threads()

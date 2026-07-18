@@ -52,6 +52,40 @@ start. Expected app-server or database failures are isolated per source and the
 next tick retries; heartbeat details contain only bounded projections and error
 types, never DSNs or message bodies.
 
+## Durable Codex cockpit bridge
+
+Set `SUPERVISOR_COCKPIT_THREAD_ID` in the same mode-`0600` environment file to
+the UUID of the one durable Codex task titled exactly `SUPERVISOR AGENT`. The
+existing combined worker then publishes an update only when its allowlisted
+status projection changes. It does not start another scheduler.
+
+The bridge uses the documented local app-server protocol. It verifies that the
+configured UUID identifies exactly one unarchived task with the expected title,
+then uses `turn/steer` for an active task or `thread/resume` plus `turn/start` for
+an idle task. A deterministic `clientUserMessageId` and the local SQLite audit
+table make retries idempotent and visible. A title mismatch, missing/archived
+task, unknown task state, or app-server error fails closed and records only the
+exception type.
+
+Cockpit prompts are explicitly labeled as automated and contain only bounded
+health flags, counts, deterministic route totals, human-review totals, canary
+state, and mutation blockers. They never contain inbox subjects, bodies,
+message/delivery/thread IDs, sender names, or credentials. Heartbeat data adds
+only whether delivery succeeded and which documented turn method was used.
+
+Inspect the local audit without contacting Codex or Cloud SQL:
+
+```bash
+python - <<'PY'
+from codex_supervisor.state import SupervisorState, default_state_path
+state = SupervisorState(default_state_path())
+try:
+    print(state.cockpit_status())
+finally:
+    state.close()
+PY
+```
+
 Use `supervisor inbox status` for local status. It masks the connection target
 and does not connect unless `--check-connection` is supplied. Use
 `supervisor inbox scan-once` for a read-only stored-function listing and local,

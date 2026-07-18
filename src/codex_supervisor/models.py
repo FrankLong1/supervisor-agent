@@ -65,6 +65,12 @@ class DeliveryReceipt:
 
 
 @dataclass(frozen=True)
+class CockpitDeliveryReceipt:
+    delivery_id: str | None
+    transport: str
+
+
+@dataclass(frozen=True)
 class SupervisorConfig:
     host_id: str
     state_path: Path

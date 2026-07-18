@@ -105,6 +105,29 @@ class WorkerTests(unittest.TestCase):
                 with WorkerLease(self.state_path):
                     self.fail("second worker lease unexpectedly acquired")
 
+    def test_cockpit_failure_is_redacted_in_heartbeat(self) -> None:
+        calls = 0
+
+        def cockpit(_tick):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("SECRET BODY")
+
+        run_worker(
+            state_path=self.state_path,
+            interval=1,
+            stop_requested=lambda: calls >= 1,
+            local_poll=lambda: {"reachable": True, "candidate_count": 0},
+            inbox_poll=lambda: {"configured": False, "mode": "disabled"},
+            cockpit_update=cockpit,
+        )
+        heartbeat = json.loads(
+            self.state_path.with_suffix(".heartbeat.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(heartbeat["result"], "degraded")
+        self.assertIn('"error_type":"RuntimeError"', heartbeat["detail"])
+        self.assertNotIn("SECRET BODY", heartbeat["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

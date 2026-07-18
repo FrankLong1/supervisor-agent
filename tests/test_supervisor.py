@@ -130,6 +130,10 @@ class Tests(unittest.TestCase):
 
     def test_missing_or_partial_unread_inventory_fails_closed(self):
         self.assertFalse(UnreadScanner(None, "host").scan().unread_supported)
+        app_server = AppServerClient(Path(self.temp.name) / "missing.sock")
+        app_result = UnreadScanner(app_server, "host").scan()
+        self.assertFalse(app_result.unread_supported)
+        self.assertIn("does not expose authoritative", app_result.note)
         missing_status = FakeInventory([{"id": "x", "hasUnreadTurn": True}])
         del missing_status.threads[0]["status"]
         self.assertFalse(UnreadScanner(missing_status, "host").scan().unread_supported)
