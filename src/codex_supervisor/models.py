@@ -40,7 +40,9 @@ class Decision:
     def validate(self) -> "Decision":
         if not isinstance(self.reason, str) or not self.reason.strip():
             raise ValueError("decision reason is required")
-        if self.kind is DecisionKind.REPLY and not (isinstance(self.reply, str) and self.reply.strip()):
+        if self.kind is DecisionKind.REPLY and not (
+            isinstance(self.reply, str) and self.reply.strip()
+        ):
             raise ValueError("REPLY requires a non-empty reply")
         if self.kind is DecisionKind.HUMAN_REVIEW_NEEDED and self.reply is not None:
             raise ValueError("HUMAN_REVIEW_NEEDED requires reply: null")
@@ -67,16 +69,7 @@ class SupervisorConfig:
     host_id: str
     state_path: Path
     socket_path: Path
-    shadow_mode: bool = True
-    allow_replies: bool = False
-    canary_evidence_id: str | None = None
-    inventory_identity: str | None = None
-    delivery_identity: str | None = None
-    delivery_confirmation_timeout_seconds: int = 60
     supervisor_thread_id: str | None = None
-
-    def mutation_requested(self) -> bool:
-        return not self.shadow_mode and self.allow_replies
 
 
 def text_from_item(item: Any) -> str | None:

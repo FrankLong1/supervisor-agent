@@ -32,7 +32,7 @@ def parse_decision(payload: str) -> Decision:
 
 
 class ConservativeClaude:
-    """Adapter boundary; no production Claude/Fable command is enabled by this project."""
+    """Adapter boundary used only to produce a recorded dry-run recommendation."""
     def __init__(self, session: SessionAdapter):
         self.session = session
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 import sqlite3
 import stat
 import subprocess
@@ -69,7 +68,7 @@ def read_heartbeat(state_path: Path) -> dict[str, object] | None:
 def heartbeat_check(state_path: Path, grace_seconds: float) -> Check:
     heartbeat = read_heartbeat(state_path)
     if heartbeat is None:
-        return Check("heartbeat", "degraded", "No completed worker tick has written a heartbeat.", "Start the service in shadow mode and re-run doctor.")
+        return Check("heartbeat", "degraded", "No controller or compatibility service has written a heartbeat.", "Start the controller or heartbeat service and re-run doctor.")
     finished_at = parse_timestamp(heartbeat.get("finished_at"))
     if finished_at is None:
         return Check("heartbeat", "failed", "Heartbeat timestamp is invalid.", "Stop the service, inspect its logs, then remove the corrupt heartbeat file.")
@@ -88,7 +87,7 @@ def heartbeat_check(state_path: Path, grace_seconds: float) -> Check:
 
 def state_check(state_path: Path) -> Check:
     if not state_path.exists():
-        return Check("state", "degraded", f"State database does not exist yet: {state_path}", "Run a local status command or start the shadow-mode service.")
+        return Check("state", "degraded", f"State database does not exist yet: {state_path}", "Run `supervisor scan-once` to create dry-run audit state.")
     try:
         uri = f"file:{state_path}?mode=ro"
         with sqlite3.connect(uri, uri=True) as db:

@@ -1,9 +1,5 @@
-"""Local lifecycle management for interactive Codex and Claude sessions.
+"""Foreground lifecycle controller for interactive Codex and Claude sessions."""
 
-This module is intentionally separate from the unread-task supervisor.  That
-service makes fail-closed decisions about existing Codex tasks; this manager
-starts and observes an operator-requested interactive CLI process.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -12,12 +8,17 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
+
+
+SESSION_SCHEMA_VERSION = 2
+ACTIVE_PHASES = {"starting", "running", "stopping"}
 
 
 @dataclass(frozen=True)
@@ -31,10 +32,18 @@ class Provider:
 
 PROVIDERS = {
     "codex": Provider(
-        "codex", os.environ.get("SUPERVISOR_CODEX_COMMAND", "codex"), ("login", "status"), ("login",),
+        "codex",
+        os.environ.get("SUPERVISOR_CODEX_COMMAND", "codex"),
+        ("login", "status"),
+        ("login",),
         ("--model", "gpt-5.6-sol", "--config", 'model_reasoning_effort="ultra"'),
     ),
-    "claude": Provider("claude", os.environ.get("SUPERVISOR_CLAUDE_COMMAND", "claude"), ("auth", "status"), ("auth", "login")),
+    "claude": Provider(
+        "claude",
+        os.environ.get("SUPERVISOR_CLAUDE_COMMAND", "claude"),
+        ("auth", "status"),
+        ("auth", "login"),
+    ),
 }
 
 
@@ -50,11 +59,8 @@ def default_manager_state_path() -> Path:
 def process_start_ticks(pid: int) -> str | None:
     """Return Linux /proc start ticks, protecting against PID reuse."""
     try:
-        # The command field can contain spaces.  Field 22 starts after the
-        # final ')' and is index 19 in the remaining fields.
         payload = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-        fields = payload.rsplit(")", 1)[1].split()
-        return fields[19]
+        return payload.rsplit(")", 1)[1].split()[19]
     except (FileNotFoundError, IndexError, OSError):
         return None
 
@@ -71,19 +77,39 @@ def process_is_live(pid: int) -> bool:
         return True
 
 
+def process_matches(
+    pid: int | None, start_ticks: str | None, command: str | None = None
+) -> bool:
+    if pid is None or not process_is_live(pid):
+        return False
+    if start_ticks and process_start_ticks(pid) != start_ticks:
+        return False
+    if not command:
+        return True
+    try:
+        command_line = Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8")
+    except OSError:
+        return True
+    return not command_line or command in command_line
+
+
 @dataclass
 class Session:
+    schema_version: int
     id: str
     provider: str
     command: str
     workspace: str
     args: list[str]
-    pid: int | None
-    process_start_ticks: str | None
+    controller_pid: int | None
+    controller_start_ticks: str | None
+    provider_pid: int | None
+    provider_start_ticks: str | None
     phase: str
     created_at: str
     started_at: str | None = None
     ended_at: str | None = None
+    heartbeat_at: str | None = None
     reason: str | None = None
     stop_requested_at: str | None = None
 
@@ -112,7 +138,9 @@ class ManagerStore:
     def _write_json(path: Path, value: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        temporary.write_text(
+            json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+        )
         temporary.chmod(0o600)
         temporary.replace(path)
 
@@ -121,58 +149,92 @@ class ManagerStore:
 
     def load(self, session_id: str) -> Session | None:
         try:
-            value = json.loads(self.session_path(session_id).read_text(encoding="utf-8"))
-            return Session(**value)
-        except (FileNotFoundError, ValueError, TypeError, json.JSONDecodeError):
+            value = json.loads(
+                self.session_path(session_id).read_text(encoding="utf-8")
+            )
+        except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(value, dict):
+            return None
+        # Read the launcher-only schema so existing state fails visibly rather
+        # than disappearing after an upgrade.
+        if "provider_pid" not in value and "pid" in value:
+            value["provider_pid"] = value.pop("pid")
+            value["provider_start_ticks"] = value.pop("process_start_ticks", None)
+            value["controller_pid"] = None
+            value["controller_start_ticks"] = None
+            value["heartbeat_at"] = None
+            value["schema_version"] = 1
+        allowed = {item.name for item in fields(Session)}
+        try:
+            return Session(
+                **{key: item for key, item in value.items() if key in allowed}
+            )
+        except (TypeError, ValueError):
             return None
 
     def record_event(self, session: Session, event: str) -> None:
-        with self.log_path(session.id).open("a", encoding="utf-8") as log:
+        path = self.log_path(session.id)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with path.open("a", encoding="utf-8") as log:
             log.write(f"{now()} {event}\n")
+        path.chmod(0o600)
 
     def active_for_workspace(self, workspace: Path) -> Session | None:
-        index = self.workspace_path(workspace)
         try:
-            session_id = json.loads(index.read_text(encoding="utf-8"))["session_id"]
-        except (FileNotFoundError, KeyError, json.JSONDecodeError):
+            session_id = json.loads(
+                self.workspace_path(workspace).read_text(encoding="utf-8")
+            )["session_id"]
+        except (FileNotFoundError, OSError, KeyError, TypeError, json.JSONDecodeError):
             return None
-        session = self.load(session_id)
-        if not session or not session_matches_process(session):
-            index.unlink(missing_ok=True)
-            if session and session.phase in {"starting", "running", "stopping"}:
-                session.phase, session.ended_at, session.reason = "stopped", now(), "stale process recovered"
-                self.save(session)
-            return None
-        return session
+        return self.load(str(session_id))
 
     def set_active(self, workspace: Path, session: Session) -> None:
-        self._write_json(self.workspace_path(workspace), {"session_id": session.id, "workspace": str(workspace)})
+        self._write_json(
+            self.workspace_path(workspace),
+            {"session_id": session.id, "workspace": str(workspace)},
+        )
 
     def clear_active(self, workspace: Path, session_id: str) -> None:
         index = self.workspace_path(workspace)
         try:
-            if json.loads(index.read_text(encoding="utf-8")).get("session_id") == session_id:
+            if (
+                json.loads(index.read_text(encoding="utf-8")).get("session_id")
+                == session_id
+            ):
                 index.unlink(missing_ok=True)
-        except (FileNotFoundError, json.JSONDecodeError):
+        except (FileNotFoundError, OSError, TypeError, json.JSONDecodeError):
             pass
 
     def all_active(self) -> Iterable[Session]:
-        for state_path in self.sessions.glob("*/state.json"):
-            session = self.load(state_path.parent.name)
-            if session and session_matches_process(session):
+        seen: set[str] = set()
+        for index in self.workspaces.glob("*.json"):
+            try:
+                session_id = str(
+                    json.loads(index.read_text(encoding="utf-8"))["session_id"]
+                )
+            except (OSError, KeyError, TypeError, json.JSONDecodeError):
+                continue
+            if session_id in seen:
+                continue
+            seen.add(session_id)
+            if session := self.load(session_id):
                 yield session
 
 
+def session_matches_controller(session: Session) -> bool:
+    return process_matches(session.controller_pid, session.controller_start_ticks)
+
+
+def session_matches_provider(session: Session) -> bool:
+    return process_matches(
+        session.provider_pid, session.provider_start_ticks, session.command
+    )
+
+
+# Compatibility name used by existing callers and tests.
 def session_matches_process(session: Session) -> bool:
-    if session.pid is None or not process_is_live(session.pid):
-        return False
-    if session.process_start_ticks and process_start_ticks(session.pid) != session.process_start_ticks:
-        return False
-    try:
-        command_line = Path(f"/proc/{session.pid}/cmdline").read_text(encoding="utf-8")
-    except OSError:
-        return True
-    return not command_line or session.command in command_line
+    return session_matches_provider(session)
 
 
 class Manager:
@@ -190,83 +252,248 @@ class Manager:
     def ensure_authenticated(provider: Provider) -> None:
         if shutil.which(provider.command) is None:
             raise RuntimeError(f"{provider.name} CLI is not installed or not on PATH")
-        status = subprocess.run([provider.command, *provider.status_args], check=False, capture_output=True, text=True)
+        status = subprocess.run(
+            [provider.command, *provider.status_args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
         if status.returncode == 0:
             return
-        print(f"{provider.name} is not logged in; starting its official login flow…", flush=True)
+        print(
+            f"{provider.name} is not logged in; starting its official login flow…",
+            flush=True,
+        )
         login = subprocess.run([provider.command, *provider.login_args], check=False)
         if login.returncode != 0:
             raise RuntimeError(f"{provider.name} login was cancelled or failed")
-        verified = subprocess.run([provider.command, *provider.status_args], check=False, capture_output=True, text=True)
+        verified = subprocess.run(
+            [provider.command, *provider.status_args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
         if verified.returncode != 0:
             raise RuntimeError(f"{provider.name} login did not complete successfully")
 
-    def start(self, provider_name: str, workspace: Path, task: str | None = None) -> Session:
+    def refresh(self, session: Session) -> Session:
+        if session.phase not in ACTIVE_PHASES:
+            return session
+        reason: str | None = None
+        if not session_matches_controller(session):
+            reason = "controller process is absent or its identity changed"
+        elif session.phase == "running" and not session_matches_provider(session):
+            reason = "provider process is absent or its identity changed"
+        if reason:
+            session.phase = "attention"
+            session.reason = reason
+            self.store.save(session)
+            self.store.record_event(session, reason)
+        return session
+
+    def start(
+        self, provider_name: str, workspace: Path, task: str | None = None
+    ) -> Session:
         workspace = workspace.resolve()
         if not workspace.is_dir():
             raise ValueError(f"workspace does not exist: {workspace}")
         if existing := self.store.active_for_workspace(workspace):
-            raise RuntimeError(f"workspace is already managed by session {existing.id}")
+            existing = self.refresh(existing)
+            if session_matches_controller(existing) or session_matches_provider(
+                existing
+            ):
+                raise RuntimeError(
+                    f"workspace is already managed by session {existing.id}"
+                )
+            self.store.clear_active(workspace, existing.id)
         provider = self.provider(provider_name)
         self.ensure_authenticated(provider)
+        controller_pid = os.getpid()
         session = Session(
+            schema_version=SESSION_SCHEMA_VERSION,
             id=f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}",
             provider=provider.name,
             command=provider.command,
             workspace=str(workspace),
             args=[*provider.launch_args, *([task] if task else [])],
-            pid=None,
-            process_start_ticks=None,
+            controller_pid=controller_pid,
+            controller_start_ticks=process_start_ticks(controller_pid),
+            provider_pid=None,
+            provider_start_ticks=None,
             phase="starting",
             created_at=now(),
+            heartbeat_at=now(),
         )
         self.store.save(session)
-        self.store.record_event(session, f"created {provider.name} session in {workspace}")
+        self.store.set_active(workspace, session)
+        self.store.record_event(
+            session, f"created {provider.name} session in {workspace}"
+        )
         try:
             process = subprocess.Popen(
-                [provider.command, *session.args], cwd=workspace, stdin=None, stdout=None, stderr=None, start_new_session=True
+                [provider.command, *session.args],
+                cwd=workspace,
+                stdin=None,
+                stdout=None,
+                stderr=None,
+                start_new_session=True,
             )
         except OSError as error:
-            session.phase, session.ended_at, session.reason = "failed", now(), str(error)
+            session.phase, session.ended_at, session.reason = (
+                "failed",
+                now(),
+                str(error),
+            )
             self.store.save(session)
+            self.store.clear_active(workspace, session.id)
             self.store.record_event(session, f"failed to launch: {error}")
             raise RuntimeError(f"could not launch {provider.name}: {error}") from error
-        session.pid = process.pid
-        session.process_start_ticks = process_start_ticks(process.pid)
-        session.phase, session.started_at = "running", now()
+        session.provider_pid = process.pid
+        session.provider_start_ticks = process_start_ticks(process.pid)
+        session.phase, session.started_at, session.heartbeat_at = (
+            "running",
+            now(),
+            now(),
+        )
         self.store.save(session)
-        self.store.set_active(workspace, session)
-        self.store.record_event(session, f"started pid={process.pid}")
+        self.store.record_event(
+            session,
+            f"started provider pid={process.pid}; controller pid={controller_pid}",
+        )
         return session
+
+    def heartbeat(self, session: Session) -> None:
+        session.heartbeat_at = now()
+        self.store.save(session)
 
     def complete(self, session: Session, return_code: int) -> None:
         session.phase = "completed" if return_code == 0 else "failed"
-        session.ended_at, session.reason = now(), f"exit code {return_code}"
+        session.ended_at, session.heartbeat_at, session.reason = (
+            now(),
+            now(),
+            f"provider exit code {return_code}",
+        )
         self.store.save(session)
         self.store.clear_active(Path(session.workspace), session.id)
         self.store.record_event(session, session.reason)
 
-    def stop(self, session: Session, force: bool = False) -> str:
-        if session.pid is None or not process_is_live(session.pid):
-            return f"session {session.id} is already stopped"
-        if not session_matches_process(session):
-            raise RuntimeError(f"refusing to stop PID {session.pid}: it no longer matches the managed session")
-        target = -session.pid
-        try:
-            os.killpg(session.pid, signal.SIGKILL if force else signal.SIGTERM)
-        except ProcessLookupError:
-            return f"session {session.id} is already stopped"
-        except OSError:
-            os.kill(session.pid, signal.SIGKILL if force else signal.SIGTERM)
-        session.phase = "force-stopped" if force else "stopping"
-        session.stop_requested_at = now()
+    def complete_stop(
+        self, session: Session, return_code: int | None, forced: bool
+    ) -> None:
+        session.phase = "force-stopped" if forced else "stopped"
+        session.ended_at = session.heartbeat_at = now()
+        session.reason = "forced stop" if forced else "operator stop"
+        if return_code is not None:
+            session.reason += f"; provider exit code {return_code}"
         self.store.save(session)
-        self.store.record_event(session, "force stop requested" if force else "graceful stop requested")
-        return f"{'force stop' if force else 'stop'} requested for session {session.id}"
+        self.store.clear_active(Path(session.workspace), session.id)
+        self.store.record_event(session, session.reason)
 
-    def wait_for_exit(self, session: Session) -> int:
-        while session_matches_process(session):
-            time.sleep(0.2)
-        # A foreground child is normally reaped by the CLI; this fallback is
-        # for the small interval between exit and state refresh.
-        return 0
+    def terminate_provider(self, session: Session, force: bool = False) -> bool:
+        if not session_matches_provider(session):
+            return False
+        provider_pid = session.provider_pid
+        assert provider_pid is not None
+        try:
+            os.killpg(provider_pid, signal.SIGKILL if force else signal.SIGTERM)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            os.kill(provider_pid, signal.SIGKILL if force else signal.SIGTERM)
+        self.store.record_event(
+            session,
+            "provider force stop requested"
+            if force
+            else "provider graceful stop requested",
+        )
+        return True
+
+    def stop(self, session: Session, force: bool = False) -> str:
+        controller_live = session_matches_controller(session)
+        provider_live = session_matches_provider(session)
+        if not controller_live and not provider_live:
+            return f"session {session.id} is already stopped"
+        session.stop_requested_at = now()
+        if force:
+            self.terminate_provider(session, force=True)
+            if controller_live and session.controller_pid != os.getpid():
+                assert session.controller_pid is not None
+                os.kill(session.controller_pid, signal.SIGKILL)
+            self.complete_stop(session, None, forced=True)
+            return f"force stopped session {session.id}"
+        session.phase = "stopping"
+        self.store.save(session)
+        self.store.record_event(session, "graceful stop requested")
+        if controller_live and session.controller_pid != os.getpid():
+            assert session.controller_pid is not None
+            os.kill(session.controller_pid, signal.SIGTERM)
+        else:
+            self.terminate_provider(session)
+        return f"stop requested for session {session.id}"
+
+
+class ManagedRuntime:
+    """The small foreground loop that owns heartbeat and provider shutdown."""
+
+    def __init__(
+        self,
+        manager: Manager,
+        *,
+        heartbeat_interval: float = 1.0,
+        stop_grace: float = 5.0,
+    ):
+        if heartbeat_interval <= 0 or stop_grace < 0:
+            raise ValueError(
+                "heartbeat interval must be positive and stop grace cannot be negative"
+            )
+        self.manager = manager
+        self.heartbeat_interval = heartbeat_interval
+        self.stop_grace = stop_grace
+        self._stop_requested = threading.Event()
+
+    def request_stop(self) -> None:
+        self._stop_requested.set()
+
+    @staticmethod
+    def _poll_child(session: Session) -> int | None:
+        if session.provider_pid is None:
+            return 0
+        try:
+            pid, status = os.waitpid(session.provider_pid, os.WNOHANG)
+        except ChildProcessError:
+            return None if session_matches_provider(session) else 0
+        if pid == 0:
+            return None
+        return os.waitstatus_to_exitcode(status)
+
+    def _stop_provider(self, session: Session) -> int | None:
+        self.manager.terminate_provider(session)
+        deadline = time.monotonic() + self.stop_grace
+        while (
+            return_code := self._poll_child(session)
+        ) is None and time.monotonic() < deadline:
+            self._stop_requested.wait(0.05)
+        if return_code is not None:
+            return return_code
+        self.manager.terminate_provider(session, force=True)
+        deadline = time.monotonic() + 1.0
+        while (
+            return_code := self._poll_child(session)
+        ) is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return return_code
+
+    def run(self, session: Session) -> int:
+        next_heartbeat = 0.0
+        while not self._stop_requested.is_set():
+            if (return_code := self._poll_child(session)) is not None:
+                self.manager.complete(session, return_code)
+                return return_code
+            current = time.monotonic()
+            if current >= next_heartbeat:
+                self.manager.heartbeat(session)
+                next_heartbeat = current + self.heartbeat_interval
+            self._stop_requested.wait(min(0.1, max(0.0, next_heartbeat - current)))
+        return_code = self._stop_provider(session)
+        self.manager.complete_stop(session, return_code, forced=False)
+        return 130

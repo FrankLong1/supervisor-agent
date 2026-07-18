@@ -44,7 +44,7 @@ def read_human_review_queue(path: str | Path) -> list[dict[str, str | int | None
 
 
 class SupervisorState:
-    """Durable terminal markers, session ID, and shadow-mode audit records."""
+    """Durable terminal markers, session ID, and dry-run audit records."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -172,7 +172,9 @@ class SupervisorState:
                 self.mark_human_review(key[0], key[1], "reply transport acknowledged but unread result did not clear before confirmation timeout", observed_unread[key])
         self.db.commit()
 
-    def record_shadow(self, host_id: str, thread_id: str, decision: str, reason: str, reply: str | None) -> None:
+    def record_dry_run(self, host_id: str, thread_id: str, decision: str, reason: str, reply: str | None) -> None:
+        # Keep the original table name so existing SQLite state needs no risky
+        # migration; the current product terminology is "dry run."
         self.db.execute("INSERT INTO supervisor_shadow_decisions(host_id,thread_id,decision,reason,reply,recorded_at) VALUES (?,?,?,?,?,?)", (host_id, thread_id, decision, reason, reply, datetime.now(UTC).isoformat()))
         self.db.commit()
 
@@ -190,4 +192,4 @@ class SupervisorState:
         ).fetchone()[0])
 
     def status(self) -> dict[str, int | str | None]:
-        return {"state_path": str(self.path), "session_id": self.session_id(), "human_review_count": self.db.execute("SELECT count(*) FROM human_review_tasks").fetchone()[0], "shadow_decision_count": self.db.execute("SELECT count(*) FROM supervisor_shadow_decisions").fetchone()[0], "pending_delivery_count": self.db.execute("SELECT count(*) FROM supervisor_delivery_claims WHERE status != 'CONFIRMED'").fetchone()[0]}
+        return {"state_path": str(self.path), "session_id": self.session_id(), "human_review_count": self.db.execute("SELECT count(*) FROM human_review_tasks").fetchone()[0], "dry_run_decision_count": self.db.execute("SELECT count(*) FROM supervisor_shadow_decisions").fetchone()[0], "pending_delivery_count": self.db.execute("SELECT count(*) FROM supervisor_delivery_claims WHERE status != 'CONFIRMED'").fetchone()[0]}
