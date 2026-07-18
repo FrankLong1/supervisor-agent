@@ -87,7 +87,9 @@ class InboxTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_configuration_defaults_disabled_and_masks_credentials(self) -> None:
-        self.assertEqual(InboxConfig.from_env({}).mode, InboxMode.DISABLED)
+        defaults = InboxConfig.from_env({})
+        self.assertEqual(defaults.mode, InboxMode.DISABLED)
+        self.assertEqual(defaults.poll_seconds, 30)
         self.assertEqual(
             self.config.masked_target, "postgresql://localhost/agent_inbox"
         )

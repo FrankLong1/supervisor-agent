@@ -567,6 +567,22 @@ class Tests(unittest.TestCase):
         self.assertTrue(ticks[0][0]["reachable"])
         self.assertFalse(ticks[0][1]["configured"])
 
+    def test_serve_rejects_a_second_inbox_cadence(self):
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SUPERVISOR_INBOX_MODE": "dry-run",
+                    "SUPERVISOR_INBOX_DSN": "postgresql://localhost/inbox",
+                    "SUPERVISOR_INBOX_INSTANCE_ID": "worker",
+                    "SUPERVISOR_INBOX_POLL_SECONDS": "30",
+                },
+                clear=True,
+            ),
+            self.assertRaises(SystemExit),
+        ):
+            main(["serve", "--state-path", str(self.path), "--interval", "10"])
+
 
 if __name__ == "__main__":
     unittest.main()

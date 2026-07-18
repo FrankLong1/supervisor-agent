@@ -37,6 +37,9 @@ set +a
 codex-unread-supervisor serve --interval 30
 ```
 
+`SUPERVISOR_INBOX_POLL_SECONDS` and `serve --interval` must match so there is
+one cadence rather than two competing schedulers.
+
 Each tick lists queued deliveries and records body-free, deduplicated routing
 observations. `dry-run` mode only observes. `poll` mode additionally claims and
 handles at most one delivery per tick, but only while the configured real-user
