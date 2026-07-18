@@ -16,7 +16,14 @@ def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description="One-shot shared inbox supervisor")
     command.add_argument(
         "command",
-        choices=("status", "scan-once", "canary", "run-once", "send-task"),
+        choices=(
+            "status",
+            "scan-once",
+            "canary",
+            "run-once",
+            "send-canary",
+            "send-task",
+        ),
     )
     command.add_argument("--state-path", type=Path, default=default_state_path())
     command.add_argument("--limit", type=int, default=20)
@@ -94,6 +101,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "run-once":
             with WorkerLease(args.state_path):
                 result = service.run_once()
+        elif args.command == "send-canary":
+            if not args.recipient_address or not args.idempotency_key:
+                raise ValueError(
+                    "send-canary requires --recipient-address and --idempotency-key"
+                )
+            result = service.send_canary(
+                recipient_address=args.recipient_address,
+                idempotency_key=args.idempotency_key,
+            )
         else:
             if (
                 not args.recipient_address

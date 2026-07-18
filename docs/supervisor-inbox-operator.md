@@ -63,6 +63,18 @@ Live commands require `SUPERVISOR_INBOX_MODE=one-shot` and an immutable agent
 UUID. The synthetic canary must be the single oldest queued delivery, be a
 `QUESTION`, and contain `{"supervisor_canary": true}` in `body_json`.
 
+The separately authenticated sender queues that fixed payload through the
+stored-function adapter; no raw SQL is required:
+
+```sh
+supervisor inbox send-canary \
+  --recipient-address RECIPIENT_GOOGLE_EMAIL \
+  --idempotency-key operator-canary:UNIQUE_STABLE_LABEL
+```
+
+Pause the recipient's continuous worker before the explicit claim so the
+manual canary command can hold the single-worker lease.
+
 ```sh
 supervisor inbox canary --delivery-id DELIVERY_UUID
 ```

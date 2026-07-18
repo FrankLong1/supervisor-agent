@@ -491,6 +491,20 @@ class InboxTests(unittest.TestCase):
             )
         self.assertEqual(adapter.sends, [])
 
+    def test_send_canary_queues_only_the_fixed_synthetic_question(self) -> None:
+        adapter = FakeInboxAdapter()
+        result = InboxService(self.config, adapter, self.state).send_canary(
+            recipient_address="research@alice",
+            idempotency_key="operator-canary:stable-key",
+        )
+        self.assertTrue(result["queued"])
+        self.assertEqual(result["kind"], MessageKind.QUESTION.value)
+        self.assertEqual(adapter.sends[0]["kind"], MessageKind.QUESTION)
+        self.assertEqual(
+            adapter.sends[0]["body_json"], {"supervisor_canary": True}
+        )
+        self.assertNotIn("task", adapter.sends[0]["body_text"].casefold())
+
 
 if __name__ == "__main__":
     unittest.main()

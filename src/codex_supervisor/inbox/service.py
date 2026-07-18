@@ -240,6 +240,47 @@ class InboxService:
             "accepted_by_recipient": False,
         }
 
+    def send_canary(
+        self,
+        *,
+        recipient_address: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Queue the fixed synthetic QUESTION used to enroll a recipient."""
+        self.config.require_live_identity()
+        authenticated_identity = self._identity()
+        sender_address = (self.config.agent_address or "").strip()
+        recipient_address = recipient_address.strip()
+        if not sender_address:
+            raise ValueError("sending a canary requires SUPERVISOR_INBOX_AGENT_ADDRESS")
+        if not recipient_address or len(recipient_address) > 320:
+            raise ValueError("recipient address must be between 1 and 320 characters")
+        if recipient_address.casefold() == sender_address.casefold():
+            raise ValueError("refusing to send an inbox canary to the configured sender")
+        if not idempotency_key or len(idempotency_key) > 200:
+            raise ValueError("idempotency key must be between 1 and 200 characters")
+        receipt = self.adapter.send_message(
+            sender_agent_id=self.config.agent_id,
+            recipient_address=recipient_address,
+            kind=MessageKind.QUESTION,
+            subject="Supervisor inbox canary",
+            body_text="Deterministic supervisor inbox canary; no execution requested.",
+            body_json={"supervisor_canary": True},
+            idempotency_key=idempotency_key,
+        )
+        return {
+            "queued": True,
+            "created": receipt.created,
+            "kind": MessageKind.QUESTION.value,
+            "authenticated_identity": authenticated_identity,
+            "sender_agent_id": self.config.agent_id,
+            "sender_address": sender_address,
+            "recipient_address": recipient_address,
+            "message_id": receipt.message_id,
+            "delivery_id": receipt.delivery_id,
+            "thread_id": receipt.resolved_thread_id,
+        }
+
     def _identity(self) -> str:
         identity = self.adapter.authenticated_identity()
         if not isinstance(identity, str) or not identity.strip():
