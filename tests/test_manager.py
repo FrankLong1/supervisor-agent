@@ -25,7 +25,7 @@ class ManagerTests(unittest.TestCase):
         self.command.chmod(self.command.stat().st_mode | stat.S_IXUSR)
         self.store = ManagerStore(self.root / "state")
         self.manager = Manager(self.store)
-        self.provider = Provider("codex", str(self.command), ("login", "status"), ("login",))
+        self.provider = Provider("codex", str(self.command), ("login", "status"), ("login",), ("--model", "test-model"))
 
     def tearDown(self) -> None:
         for session in self.store.all_active():
@@ -36,6 +36,7 @@ class ManagerTests(unittest.TestCase):
         with patch("codex_supervisor.manager.PROVIDERS", {"codex": self.provider}):
             session = self.manager.start("codex", self.root)
         self.assertEqual(session.phase, "running")
+        self.assertEqual(session.args, ["--model", "test-model"])
         self.assertTrue(session_matches_process(session))
         self.assertEqual(session.process_start_ticks, process_start_ticks(session.pid))
         self.assertEqual(self.store.active_for_workspace(self.root).id, session.id)

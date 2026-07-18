@@ -66,6 +66,10 @@ before signalling its process group, and session metadata plus lifecycle logs
 are preserved under `$XDG_STATE_HOME/codex-supervisor-manager` (or
 `~/.local/state/codex-supervisor-manager`).
 
+Codex sessions default to `gpt-5.6-sol` with `ultra` reasoning effort. This is
+an interactive, foreground session only; it does not enable the unattended
+unread-task scheduler or its watchdog timer.
+
 State is outside the checkout at `$XDG_STATE_HOME/demo-agent-supervisor/state.sqlite3`, defaulting to `~/.local/state/demo-agent-supervisor/state.sqlite3`. It contains terminal human-review markers, per-task supervisor session IDs, shadow-decision audit records, delivery claims, and canary evidence bindings.
 
 `scan-once` runs one shadow-only cycle. The local Fable CLI's model, session creation/resume, and tools-disabled invocation were verified before it was wired. It never replies to Codex in this mode.

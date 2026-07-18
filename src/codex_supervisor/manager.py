@@ -26,10 +26,14 @@ class Provider:
     command: str
     status_args: tuple[str, ...]
     login_args: tuple[str, ...]
+    launch_args: tuple[str, ...] = ()
 
 
 PROVIDERS = {
-    "codex": Provider("codex", os.environ.get("SUPERVISOR_CODEX_COMMAND", "codex"), ("login", "status"), ("login",)),
+    "codex": Provider(
+        "codex", os.environ.get("SUPERVISOR_CODEX_COMMAND", "codex"), ("login", "status"), ("login",),
+        ("--model", "gpt-5.6-sol", "--config", 'model_reasoning_effort="ultra"'),
+    ),
     "claude": Provider("claude", os.environ.get("SUPERVISOR_CLAUDE_COMMAND", "claude"), ("auth", "status"), ("auth", "login")),
 }
 
@@ -210,7 +214,7 @@ class Manager:
             provider=provider.name,
             command=provider.command,
             workspace=str(workspace),
-            args=[task] if task else [],
+            args=[*provider.launch_args, *([task] if task else [])],
             pid=None,
             process_start_ticks=None,
             phase="starting",
