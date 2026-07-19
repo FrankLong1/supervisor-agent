@@ -1,0 +1,7 @@
+interface:
+  display_name: "Supervisor Skill Mode"
+  short_description: "Run supervised work through completion"
+  default_prompt: "Use $supervisor-skill-mode to own this task through verified completion."
+
+policy:
+  allow_implicit_invocation: false

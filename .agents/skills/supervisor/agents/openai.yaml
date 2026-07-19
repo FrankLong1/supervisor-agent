@@ -1,7 +1,0 @@
-interface:
-  display_name: "Supervisor"
-  short_description: "Supervise work through verified completion"
-  default_prompt: "Use $supervisor to own this task through verified completion."
-
-policy:
-  allow_implicit_invocation: false

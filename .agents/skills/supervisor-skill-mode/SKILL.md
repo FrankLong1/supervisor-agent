@@ -1,9 +1,9 @@
 ---
-name: supervisor
-description: Start or continue an explicitly requested Codex goal and supervise the work through verified completion. Use when the user invokes `$supervisor`, asks to enter Goal Mode, or explicitly asks Codex to keep working autonomously on a concrete outcome. Do not use for ordinary one-turn requests, planning or brainstorming without execution, or when the outcome is too ambiguous to define safely.
+name: supervisor-skill-mode
+description: Start or continue an explicitly requested Codex goal and supervise the work through verified completion. Use when the user invokes `$supervisor-skill-mode`, asks to enter the supervisor skill mode, asks to enter Goal Mode, or explicitly asks Codex to keep working autonomously on a concrete outcome. Do not use for ordinary one-turn requests, planning or brainstorming without execution, or when the outcome is too ambiguous to define safely.
 ---
 
-# Supervisor
+# Supervisor Skill Mode
 
 Treat explicit invocation of this skill as authorization to create a goal for
 the requested work. Goal Mode preserves the task lifecycle; this skill supplies
