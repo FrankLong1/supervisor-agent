@@ -1,0 +1,7 @@
+interface:
+  display_name: "Run Supervised Goal"
+  short_description: "Own a task through verified completion"
+  default_prompt: "Use $run-supervised-goal to own this task through verified completion."
+
+policy:
+  allow_implicit_invocation: false
