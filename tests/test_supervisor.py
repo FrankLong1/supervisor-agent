@@ -414,6 +414,43 @@ class Tests(unittest.TestCase):
         self.assertNotIn("Evidence 5 is recorded.", page)
         self.assertNotIn("Evidence 6 is recorded.", page)
 
+    def test_console_shows_picked_up_and_handled_remote_inbox_tasks(self):
+        common = {
+            "message_id": "message",
+            "inbox_thread_id": "inbox-thread",
+            "sender_address": "sender@alice",
+            "workspace_key": "supervisor-agent",
+            "workspace_path": self.temp.name,
+            "task_body": "private task body",
+            "task_body_sha256": "hash",
+            "handler_agent_id": "agent-id",
+            "handler_address": "helper@bob",
+        }
+        self.state.accept_inbox_run(
+            **common,
+            delivery_id="queued-delivery",
+            client_user_message_id="queued-client-message",
+            task_title="Queued <task>",
+        )
+        self.state.accept_inbox_run(
+            **common,
+            delivery_id="handled-delivery",
+            client_user_message_id="handled-client-message",
+            task_title="Handled task",
+        )
+        self.state.update_inbox_run("handled-delivery", "SUCCEEDED")
+
+        page = render_html(self.path, Path("/missing.sock"))
+
+        self.assertIn("Remote inbox tasks", page)
+        self.assertIn("Queued &lt;task&gt;", page)
+        self.assertIn("Picked up · queued", page)
+        self.assertIn("Handled task", page)
+        self.assertIn(">Handled</span>", page)
+        self.assertIn("Agent: helper@bob", page)
+        self.assertIn("from sender@alice", page)
+        self.assertNotIn("private task body", page)
+
     def test_queue_command_reads_legacy_state_without_migrating_it(self):
         self.state.close()
         self.path.unlink()

@@ -8,24 +8,34 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .codex import AppServerClient
-from .state import read_human_review_queue
+from .state import read_human_review_queue, read_inbox_run_history
 
 
-STYLESHEET = b"""body{font:16px/1.55 system-ui,sans-serif;max-width:900px;margin:2.5rem auto;padding:0 1.25rem;background:#f7f8fa;color:#19212b}h1{margin-bottom:0}h2{margin:2.5rem 0 1rem;font-size:1.15rem}.muted{color:#687382;font-size:.875rem}.work-list,.review-list{display:grid;gap:.85rem}.work,.review{background:#fff;border:1px solid #dde2e8;border-radius:10px;padding:1rem 1.15rem;box-shadow:0 1px 2px #19212b0a}.work{display:flex;justify-content:space-between;gap:1rem}.state,.meta{color:#687382;font-size:.875rem}.task-label,.reason-label{margin:0 0 .2rem;font-size:.8rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#596575}.review h3{margin:0;font-size:1.12rem}.reason-label{margin-top:1rem}.reason-points{margin:.35rem 0 0;padding-left:1.25rem}.reason-points>li{padding:.22rem 0}.reason-points strong{font-weight:750;color:#111820}.reason-points ul{margin:.2rem 0 .3rem;padding-left:1.15rem}.reason-points ul li{padding:.12rem 0}.meta{margin:.75rem 0 0}.empty{color:#687382;font-style:italic}"""
+STYLESHEET = b"""body{font:16px/1.55 system-ui,sans-serif;max-width:900px;margin:2.5rem auto;padding:0 1.25rem;background:#f7f8fa;color:#19212b}h1{margin-bottom:0}h2{margin:2.5rem 0 1rem;font-size:1.15rem}.muted{color:#687382;font-size:.875rem}.work-list,.review-list,.inbox-list{display:grid;gap:.85rem}.work,.review,.inbox-task{background:#fff;border:1px solid #dde2e8;border-radius:10px;padding:1rem 1.15rem;box-shadow:0 1px 2px #19212b0a}.work{display:flex;justify-content:space-between;gap:1rem}.inbox-head{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem}.inbox-task h3{margin:0;font-size:1.05rem}.state,.meta{color:#687382;font-size:.875rem}.badge{white-space:nowrap;border-radius:999px;padding:.18rem .65rem;background:#e8edf3;color:#384453;font-size:.78rem;font-weight:700}.badge.handled{background:#def4e7;color:#17663a}.badge.working{background:#e3efff;color:#175ca4}.badge.attention{background:#fff0d6;color:#875300}.task-label,.reason-label{margin:0 0 .2rem;font-size:.8rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#596575}.review h3{margin:0;font-size:1.12rem}.reason-label{margin-top:1rem}.reason-points{margin:.35rem 0 0;padding-left:1.25rem}.reason-points>li{padding:.22rem 0}.reason-points strong{font-weight:750;color:#111820}.reason-points ul{margin:.2rem 0 .3rem;padding-left:1.15rem}.reason-points ul li{padding:.12rem 0}.meta{margin:.75rem 0 0}.empty{color:#687382;font-style:italic}"""
 
 
-def _active_work(state_path: Path, socket_path: Path, reviewed_ids: set[str]) -> list[dict[str, str]]:
+def _active_work(
+    state_path: Path,
+    socket_path: Path,
+    reviewed_ids: set[str],
+    inbox_thread_ids: set[str] | None = None,
+) -> list[dict[str, str]]:
+    inbox_thread_ids = inbox_thread_ids or set()
     try:
         threads = AppServerClient(socket_path).list_unarchived_threads()
         titles = {str(item["id"]): str(item.get("name") or item.get("title") or "Untitled task") for item in threads}
         active = [
             {"title": titles[str(item["id"])], "thread_id": str(item["id"]), "state": "active"}
-            for item in threads if item.get("status", {}).get("type") == "active"
+            for item in threads
+            if item.get("status", {}).get("type") == "active"
+            and str(item["id"]) not in inbox_thread_ids
         ]
         active.extend(
             {"title": titles[str(item["id"])], "thread_id": str(item["id"]), "state": "queued for Fable"}
             for item in threads
-            if item.get("status", {}).get("type") == "idle" and str(item["id"]) not in reviewed_ids
+            if item.get("status", {}).get("type") == "idle"
+            and str(item["id"]) not in reviewed_ids
+            and str(item["id"]) not in inbox_thread_ids
         )
         import sqlite3
         db = sqlite3.connect(f"file:{state_path}?mode=ro", uri=True)
@@ -78,9 +88,64 @@ def _truncate_point(point: str, limit: int = 240) -> str:
     return f"{shortened or point[:limit - 1].rstrip()}…"
 
 
+def _inbox_status(status: str) -> tuple[str, str]:
+    if status == "SUCCEEDED":
+        return "Handled", "handled"
+    if status in {"NEEDS_HUMAN", "AMBIGUOUS"}:
+        return "Needs review", "attention"
+    if status == "ACCEPTED_QUEUED":
+        return "Picked up · queued", "working"
+    if status in {
+        "CREATE_REQUESTED",
+        "THREAD_CREATED",
+        "TURN_START_REQUESTED",
+        "RUNNING",
+    }:
+        return "Picked up · in progress", "working"
+    return status.replace("_", " ").title(), ""
+
+
+def _render_inbox_tasks(rows: list[dict[str, str | None]]) -> str:
+    cards: list[str] = []
+    for row in rows:
+        label, badge_class = _inbox_status(str(row["status"] or "unknown"))
+        handler = (
+            row["handler_address"]
+            or row["handler_agent_id"]
+            or row["claimant_instance_id"]
+            or "Local Codex agent"
+        )
+        title = row["task_title"] or "Shared inbox task"
+        timestamp = row["finished_at"] or row["updated_at"] or row["created_at"] or "unknown"
+        sender = row["sender_address"] or "unknown sender"
+        cards.append(
+            "<article class=\"inbox-task\">"
+            "<div class=\"inbox-head\">"
+            f"<h3>{html.escape(str(title))}</h3>"
+            f"<span class=\"badge {badge_class}\">{html.escape(label)}</span>"
+            "</div>"
+            f"<p class=\"meta\">Agent: {html.escape(str(handler))}"
+            f" &middot; from {html.escape(str(sender))}"
+            f" &middot; updated {html.escape(str(timestamp))}</p>"
+            "</article>"
+        )
+    return "".join(cards) or "<p class=\"empty\">No remote inbox tasks have been picked up yet.</p>"
+
+
 def render_html(state_path: Path, socket_path: Path) -> str:
     rows = read_human_review_queue(state_path)
-    active_rows = _active_work(state_path, socket_path, {row["thread_id"] for row in rows})
+    inbox_rows = read_inbox_run_history(state_path)
+    inbox_thread_ids = {
+        str(row["codex_thread_id"])
+        for row in inbox_rows
+        if row["codex_thread_id"]
+    }
+    active_rows = _active_work(
+        state_path,
+        socket_path,
+        {str(row["thread_id"]) for row in rows},
+        inbox_thread_ids,
+    )
     active_body = "".join(
         f"<article class=\"work\"><span>{html.escape(item['title'])}</span>"
         f"<span class=\"state\">{html.escape(item['state'])}</span></article>"
@@ -103,6 +168,7 @@ def render_html(state_path: Path, socket_path: Path) -> str:
 <link rel="stylesheet" href="/styles.css">
 </head><body><h1>Fable supervisor</h1><p><small>Read-only. Refreshes every 15 seconds.</small></p>
 <h2>Fable is still juggling</h2><section class="work-list">{active_body}</section>
+<h2>Remote inbox tasks</h2><section class="inbox-list">{_render_inbox_tasks(inbox_rows)}</section>
 <h2>Needs your review</h2><section class="review-list">{body}</section></body></html>"""
 
 

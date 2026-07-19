@@ -62,27 +62,49 @@ def read_inbox_run_history(
             str(row[1])
             for row in db.execute("PRAGMA table_info(supervisor_inbox_runs)")
         }
-        task_title = "task_title" if "task_title" in columns else "'' AS task_title"
+        task_title = (
+            "runs.task_title"
+            if "task_title" in columns
+            else "'' AS task_title"
+        )
         handler_agent_id = (
-            "handler_agent_id"
+            "runs.handler_agent_id"
             if "handler_agent_id" in columns
             else "'' AS handler_agent_id"
         )
         handler_address = (
-            "handler_address"
+            "runs.handler_address"
             if "handler_address" in columns
             else "'' AS handler_address"
         )
+        has_processing = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='supervisor_inbox_processing'"
+        ).fetchone() is not None
+        claimant_instance_id = (
+            "processing.claimant_instance_id"
+            if has_processing
+            else "'' AS claimant_instance_id"
+        )
+        processing_join = (
+            "LEFT JOIN supervisor_inbox_processing AS processing "
+            "ON processing.delivery_id=runs.delivery_id"
+            if has_processing
+            else ""
+        )
         rows = db.execute(
             f"SELECT {task_title},{handler_agent_id},{handler_address},"
-            "sender_address,status,codex_thread_id,created_at,updated_at,finished_at "
-            "FROM supervisor_inbox_runs ORDER BY updated_at DESC LIMIT ?",
+            f"{claimant_instance_id},runs.sender_address,runs.status,"
+            "runs.codex_thread_id,runs.created_at,runs.updated_at,runs.finished_at "
+            f"FROM supervisor_inbox_runs AS runs {processing_join} "
+            "ORDER BY runs.updated_at DESC LIMIT ?",
             (bounded_limit,),
         ).fetchall()
         keys = (
             "task_title",
             "handler_agent_id",
             "handler_address",
+            "claimant_instance_id",
             "sender_address",
             "status",
             "codex_thread_id",

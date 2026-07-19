@@ -156,7 +156,9 @@ codex-unread-supervisor doctor --strict
 
 The browser console is loopback-only and read-only at
 `http://127.0.0.1:8765/`. Existing terminal human-review markers can be cleared
-only with the explicit `reset-human-review` command.
+only with the explicit `reset-human-review` command. Its remote inbox section
+keeps accepted tasks visible through picked-up, in-progress, handled, and
+needs-review states, together with the handling agent identity.
 
 The `serve` command is the single foreground scheduler. Every bounded tick
 checks the local Codex app server and, when configured, the Cloud SQL inbox.
