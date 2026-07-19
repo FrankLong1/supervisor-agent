@@ -19,8 +19,9 @@ This package provides two deliberately small pieces:
 2. `supervisor scan-once` performs one explicit, read-only analysis of Codex
    tasks that are both idle and marked unread.
 
-There is no automatic-reply mode in the current implementation. The one-shot
-analysis records a recommendation but never sends it to a Codex task.
+The unread-task analysis remains read-only. Separately, the shared Cloud SQL
+inbox can accept explicitly trusted v1 proposals into new mapped Codex
+app-server tasks when recipient policy enables that mode.
 
 ## Install
 
@@ -160,8 +161,10 @@ only with the explicit `reset-human-review` command.
 The `serve` command is the single foreground scheduler. Every bounded tick
 checks the local Codex app server and, when configured, the Cloud SQL inbox.
 The inbox defaults to disabled. In `dry-run` mode it continuously observes
-queued deliveries; in `poll` mode it handles at most one deterministic delivery
-per tick after matching sender-verified canary evidence. Systemd user units
+queued deliveries; in `poll` mode it handles at most one delivery per tick
+after matching sender-verified canary evidence. With execution mode `trusted`,
+an authorized v1 proposal is queued locally, starts one Codex app-server thread
+and turn, and returns its result on the same Cloud SQL conversation. Systemd user units
 rendered by `service-install` read the optional
 `~/.config/codex-unread-supervisor/inbox.env` file and remain disabled until the
 workstation startup/service owner enables them.
@@ -173,11 +176,13 @@ operator guide for the fail-closed binding and audit details.
 An idle cockpit wakes at `xhigh` reasoning; an active cockpit is never steered,
 and unchanged quiet polls leave it standing down.
 
-## Safety boundary and later work
+## Safety boundary
 
-Cloud inbox mutation is limited to the deterministic handlers documented in
-the operator guide and remains gated by exact identity plus sender-verified
-canary evidence. Generic LLM execution and automatic Codex task replies remain
-disabled. Richer task acceptance/execution and UI are separate later specs.
+Cloud inbox mutation remains gated by exact identity plus sender-verified
+canary evidence. Autonomous Codex work additionally requires the trusted
+contact grant, local execution mode, v1 payload, and recipient-owned workspace
+mapping. Delivery IDs map to exactly one local run; ambiguous app-server
+creation stops visibly rather than duplicating work. Results can resume only an
+exact previously correlated existing task.
 
 See [the specs index](specs/README.md) for the implementation split.

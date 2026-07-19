@@ -43,6 +43,64 @@ def read_human_review_queue(path: str | Path) -> list[dict[str, str | int | None
         db.close()
 
 
+def read_inbox_run_history(
+    path: str | Path, limit: int = 100
+) -> list[dict[str, str | None]]:
+    """Read bounded inbox task summaries without creating or migrating state."""
+    state_path = Path(path)
+    if not state_path.exists():
+        return []
+    bounded_limit = max(1, min(limit, 500))
+    db = sqlite3.connect(f"file:{state_path}?mode=ro", uri=True)
+    try:
+        if db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='supervisor_inbox_runs'"
+        ).fetchone() is None:
+            return []
+        columns = {
+            str(row[1])
+            for row in db.execute("PRAGMA table_info(supervisor_inbox_runs)")
+        }
+        task_title = "task_title" if "task_title" in columns else "'' AS task_title"
+        handler_agent_id = (
+            "handler_agent_id"
+            if "handler_agent_id" in columns
+            else "'' AS handler_agent_id"
+        )
+        handler_address = (
+            "handler_address"
+            if "handler_address" in columns
+            else "'' AS handler_address"
+        )
+        rows = db.execute(
+            f"SELECT {task_title},{handler_agent_id},{handler_address},"
+            "sender_address,status,codex_thread_id,created_at,updated_at,finished_at "
+            "FROM supervisor_inbox_runs ORDER BY updated_at DESC LIMIT ?",
+            (bounded_limit,),
+        ).fetchall()
+        keys = (
+            "task_title",
+            "handler_agent_id",
+            "handler_address",
+            "sender_address",
+            "status",
+            "codex_thread_id",
+            "created_at",
+            "updated_at",
+            "finished_at",
+        )
+        return [
+            {
+                key: None if value is None else str(value)
+                for key, value in zip(keys, row, strict=True)
+            }
+            for row in rows
+        ]
+    finally:
+        db.close()
+
+
 class SupervisorState:
     """Durable terminal markers, session ID, and dry-run audit records."""
 
@@ -102,10 +160,50 @@ class SupervisorState:
           created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS supervisor_cockpit_updates_pending
           ON supervisor_cockpit_updates(thread_id, status, id);
+        CREATE TABLE IF NOT EXISTS supervisor_inbox_runs (
+          delivery_id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
+          inbox_thread_id TEXT NOT NULL, sender_address TEXT NOT NULL,
+          task_title TEXT NOT NULL DEFAULT '',
+          handler_agent_id TEXT NOT NULL DEFAULT '',
+          handler_address TEXT NOT NULL DEFAULT '',
+          workspace_key TEXT NOT NULL, workspace_path TEXT NOT NULL,
+          task_body TEXT, task_body_sha256 TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN
+            ('ACCEPTED_QUEUED','CREATE_REQUESTED','THREAD_CREATED',
+             'TURN_START_REQUESTED','RUNNING','SUCCEEDED','NEEDS_HUMAN','AMBIGUOUS')),
+          codex_thread_id TEXT UNIQUE, codex_turn_id TEXT,
+          client_user_message_id TEXT NOT NULL UNIQUE,
+          accepted_message_id TEXT, result_message_id TEXT,
+          last_codex_status TEXT, last_error_type TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT);
+        CREATE INDEX IF NOT EXISTS supervisor_inbox_runs_active
+          ON supervisor_inbox_runs(status, created_at);
+        CREATE TABLE IF NOT EXISTS supervisor_inbox_outbound_correlations (
+          inbox_thread_id TEXT PRIMARY KEY, proposal_message_id TEXT NOT NULL UNIQUE,
+          proposal_delivery_id TEXT NOT NULL UNIQUE, source_codex_thread_id TEXT,
+          recipient_address TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS supervisor_inbox_session_deliveries (
+          delivery_id TEXT PRIMARY KEY, inbox_thread_id TEXT NOT NULL,
+          target_codex_thread_id TEXT NOT NULL, sender_address TEXT NOT NULL,
+          kind TEXT NOT NULL, body_text TEXT,
+          client_user_message_id TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL CHECK (status IN ('PENDING','DELIVERED','AMBIGUOUS')),
+          codex_turn_id TEXT, last_error_type TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         """)
         columns = {str(row[1]) for row in self.db.execute("PRAGMA table_info(human_review_tasks)")}
         if "title" not in columns:
             self.db.execute("ALTER TABLE human_review_tasks ADD COLUMN title TEXT NOT NULL DEFAULT ''")
+        inbox_run_columns = {
+            str(row[1])
+            for row in self.db.execute("PRAGMA table_info(supervisor_inbox_runs)")
+        }
+        for column in ("task_title", "handler_agent_id", "handler_address"):
+            if column not in inbox_run_columns:
+                self.db.execute(
+                    f"ALTER TABLE supervisor_inbox_runs ADD COLUMN {column} "
+                    "TEXT NOT NULL DEFAULT ''"
+                )
         self.db.commit()
 
     def close(self) -> None:
@@ -331,6 +429,11 @@ class SupervisorState:
             "ambiguous_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_processing WHERE local_status='AMBIGUOUS'").fetchone()[0]),
             "inbox_human_review_count": int(self.db.execute("SELECT count(*) FROM human_review_tasks WHERE host_id LIKE 'inbox:%'").fetchone()[0]),
             "active_canary_evidence_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_canary_evidence WHERE revoked_at IS NULL").fetchone()[0]),
+            "queued_run_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_runs WHERE status='ACCEPTED_QUEUED'").fetchone()[0]),
+            "active_run_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_runs WHERE status IN ('CREATE_REQUESTED','THREAD_CREATED','TURN_START_REQUESTED','RUNNING')").fetchone()[0]),
+            "completed_run_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_runs WHERE status='SUCCEEDED'").fetchone()[0]),
+            "ambiguous_run_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_runs WHERE status='AMBIGUOUS'").fetchone()[0]),
+            "pending_session_delivery_count": int(self.db.execute("SELECT count(*) FROM supervisor_inbox_session_deliveries WHERE status='PENDING'").fetchone()[0]),
         }
 
     def observe_cockpit_update(self, *, thread_id: str, fingerprint: str) -> int | None:
@@ -374,6 +477,208 @@ class SupervisorState:
         self.db.execute(
             "UPDATE supervisor_cockpit_updates SET last_error_type=?,updated_at=? WHERE id=? AND status='PENDING'",
             (error_type[:128], datetime.now(UTC).isoformat(), update_id),
+        )
+        self.db.commit()
+
+    def accept_inbox_run(
+        self, *, delivery_id: str, message_id: str, inbox_thread_id: str,
+        sender_address: str, workspace_key: str, workspace_path: str,
+        task_body: str, task_body_sha256: str, client_user_message_id: str,
+        task_title: str = "", handler_agent_id: str = "",
+        handler_address: str = "",
+    ) -> bool:
+        now = datetime.now(UTC).isoformat()
+        cursor = self.db.execute(
+            "INSERT OR IGNORE INTO supervisor_inbox_runs("
+            "delivery_id,message_id,inbox_thread_id,sender_address,task_title,"
+            "handler_agent_id,handler_address,workspace_key,"
+            "workspace_path,task_body,task_body_sha256,status,client_user_message_id,"
+            "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'ACCEPTED_QUEUED',?,?,?)",
+            (delivery_id, message_id, inbox_thread_id, sender_address[:512],
+             task_title[:500], handler_agent_id[:64], handler_address[:512],
+             workspace_key[:64], workspace_path, task_body, task_body_sha256,
+             client_user_message_id, now, now),
+        )
+        self.db.commit()
+        return cursor.rowcount == 1
+
+    def inbox_run(self, delivery_id: str) -> dict[str, str | None] | None:
+        row = self.db.execute(
+            "SELECT delivery_id,message_id,inbox_thread_id,sender_address,task_title,"
+            "handler_agent_id,handler_address,workspace_key,"
+            "workspace_path,task_body,task_body_sha256,status,codex_thread_id,codex_turn_id,"
+            "client_user_message_id,accepted_message_id,result_message_id,last_codex_status,"
+            "last_error_type,created_at,updated_at,finished_at "
+            "FROM supervisor_inbox_runs WHERE delivery_id=?",
+            (delivery_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        keys = (
+            "delivery_id","message_id","inbox_thread_id","sender_address",
+            "task_title","handler_agent_id","handler_address",
+            "workspace_key","workspace_path","task_body","task_body_sha256","status",
+            "codex_thread_id","codex_turn_id","client_user_message_id",
+            "accepted_message_id","result_message_id","last_codex_status",
+            "last_error_type","created_at","updated_at","finished_at",
+        )
+        return {
+            key: None if value is None else str(value)
+            for key, value in zip(keys, row, strict=True)
+        }
+
+    def active_inbox_run_count(self) -> int:
+        return int(self.db.execute(
+            "SELECT count(*) FROM supervisor_inbox_runs WHERE status IN "
+            "('CREATE_REQUESTED','THREAD_CREATED','TURN_START_REQUESTED','RUNNING')"
+        ).fetchone()[0])
+
+    def queued_inbox_runs(self, limit: int = 10) -> list[dict[str, str | None]]:
+        ids = self.db.execute(
+            "SELECT delivery_id FROM supervisor_inbox_runs "
+            "WHERE status='ACCEPTED_QUEUED' ORDER BY created_at LIMIT ?", (limit,)
+        ).fetchall()
+        return [self.inbox_run(str(row[0])) for row in ids]  # type: ignore[list-item]
+
+    def active_inbox_runs(self, limit: int = 20) -> list[dict[str, str | None]]:
+        ids = self.db.execute(
+            "SELECT delivery_id FROM supervisor_inbox_runs WHERE status IN "
+            "('THREAD_CREATED','TURN_START_REQUESTED','RUNNING') "
+            "ORDER BY created_at LIMIT ?", (limit,),
+        ).fetchall()
+        return [self.inbox_run(str(row[0])) for row in ids]  # type: ignore[list-item]
+
+    def resumable_thread_created_runs(
+        self, limit: int = 10
+    ) -> list[dict[str, str | None]]:
+        ids = self.db.execute(
+            "SELECT delivery_id FROM supervisor_inbox_runs "
+            "WHERE status='THREAD_CREATED' ORDER BY created_at LIMIT ?", (limit,)
+        ).fetchall()
+        return [self.inbox_run(str(row[0])) for row in ids]  # type: ignore[list-item]
+
+    def fail_interrupted_inbox_requests(self) -> list[dict[str, str | None]]:
+        ids = self.db.execute(
+            "SELECT delivery_id FROM supervisor_inbox_runs WHERE status IN "
+            "('CREATE_REQUESTED','TURN_START_REQUESTED') ORDER BY created_at"
+        ).fetchall()
+        runs = [self.inbox_run(str(row[0])) for row in ids]
+        now = datetime.now(UTC).isoformat()
+        self.db.execute(
+            "UPDATE supervisor_inbox_runs SET status='AMBIGUOUS',"
+            "last_error_type='InterruptedExternalRequest',updated_at=?,finished_at=? "
+            "WHERE status IN ('CREATE_REQUESTED','TURN_START_REQUESTED')",
+            (now, now),
+        )
+        self.db.commit()
+        return [run for run in runs if run is not None]
+
+    def update_inbox_run(
+        self, delivery_id: str, status: str, *, codex_thread_id: str | None = None,
+        codex_turn_id: str | None = None, accepted_message_id: str | None = None,
+        result_message_id: str | None = None, last_codex_status: str | None = None,
+        last_error_type: str | None = None, clear_task_body: bool = False,
+    ) -> None:
+        allowed = {
+            "ACCEPTED_QUEUED","CREATE_REQUESTED","THREAD_CREATED",
+            "TURN_START_REQUESTED","RUNNING","SUCCEEDED","NEEDS_HUMAN","AMBIGUOUS",
+        }
+        if status not in allowed:
+            raise ValueError("invalid inbox run status")
+        now = datetime.now(UTC).isoformat()
+        terminal = status in {"SUCCEEDED", "NEEDS_HUMAN", "AMBIGUOUS"}
+        self.db.execute(
+            "UPDATE supervisor_inbox_runs SET status=?,"
+            "codex_thread_id=COALESCE(?,codex_thread_id),"
+            "codex_turn_id=COALESCE(?,codex_turn_id),"
+            "accepted_message_id=COALESCE(?,accepted_message_id),"
+            "result_message_id=COALESCE(?,result_message_id),"
+            "last_codex_status=COALESCE(?,last_codex_status),"
+            "last_error_type=COALESCE(?,last_error_type),"
+            "task_body=CASE WHEN ? THEN NULL ELSE task_body END,"
+            "updated_at=?,finished_at=CASE WHEN ? THEN COALESCE(finished_at,?) ELSE finished_at END "
+            "WHERE delivery_id=?",
+            (status, codex_thread_id, codex_turn_id, accepted_message_id,
+             result_message_id, last_codex_status,
+             None if last_error_type is None else last_error_type[:128],
+             1 if clear_task_body else 0, now, 1 if terminal else 0, now, delivery_id),
+        )
+        self.db.commit()
+
+    def record_outbound_correlation(
+        self, *, inbox_thread_id: str, proposal_message_id: str,
+        proposal_delivery_id: str, source_codex_thread_id: str | None,
+        recipient_address: str,
+    ) -> None:
+        self.db.execute(
+            "INSERT INTO supervisor_inbox_outbound_correlations("
+            "inbox_thread_id,proposal_message_id,proposal_delivery_id,"
+            "source_codex_thread_id,recipient_address,created_at) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(inbox_thread_id) DO UPDATE SET "
+            "source_codex_thread_id=COALESCE(excluded.source_codex_thread_id,"
+            "supervisor_inbox_outbound_correlations.source_codex_thread_id)",
+            (inbox_thread_id, proposal_message_id, proposal_delivery_id,
+             source_codex_thread_id, recipient_address[:512],
+             datetime.now(UTC).isoformat()),
+        )
+        self.db.commit()
+
+    def outbound_correlation(self, inbox_thread_id: str) -> dict[str, str | None] | None:
+        row = self.db.execute(
+            "SELECT inbox_thread_id,proposal_message_id,proposal_delivery_id,"
+            "source_codex_thread_id,recipient_address FROM "
+            "supervisor_inbox_outbound_correlations WHERE inbox_thread_id=?",
+            (inbox_thread_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        keys = ("inbox_thread_id","proposal_message_id","proposal_delivery_id",
+                "source_codex_thread_id","recipient_address")
+        return {key: None if value is None else str(value)
+                for key, value in zip(keys, row, strict=True)}
+
+    def enqueue_session_delivery(
+        self, *, delivery_id: str, inbox_thread_id: str,
+        target_codex_thread_id: str, sender_address: str, kind: str,
+        body_text: str, client_user_message_id: str,
+    ) -> bool:
+        now = datetime.now(UTC).isoformat()
+        cursor = self.db.execute(
+            "INSERT OR IGNORE INTO supervisor_inbox_session_deliveries("
+            "delivery_id,inbox_thread_id,target_codex_thread_id,sender_address,kind,"
+            "body_text,client_user_message_id,status,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,'PENDING',?,?)",
+            (delivery_id, inbox_thread_id, target_codex_thread_id,
+             sender_address[:512], kind[:64], body_text, client_user_message_id,
+             now, now),
+        )
+        self.db.commit()
+        return cursor.rowcount == 1
+
+    def pending_session_deliveries(self, limit: int = 10) -> list[dict[str, str]]:
+        rows = self.db.execute(
+            "SELECT delivery_id,inbox_thread_id,target_codex_thread_id,sender_address,"
+            "kind,body_text,client_user_message_id FROM "
+            "supervisor_inbox_session_deliveries WHERE status='PENDING' "
+            "ORDER BY created_at LIMIT ?", (limit,),
+        ).fetchall()
+        keys = ("delivery_id","inbox_thread_id","target_codex_thread_id",
+                "sender_address","kind","body_text","client_user_message_id")
+        return [{key: str(value) for key, value in zip(keys, row, strict=True)}
+                for row in rows]
+
+    def finish_session_delivery(
+        self, delivery_id: str, *, status: str, codex_turn_id: str | None = None,
+        last_error_type: str | None = None,
+    ) -> None:
+        if status not in {"DELIVERED", "AMBIGUOUS"}:
+            raise ValueError("invalid session delivery status")
+        self.db.execute(
+            "UPDATE supervisor_inbox_session_deliveries SET status=?,codex_turn_id=?,"
+            "last_error_type=?,body_text=NULL,updated_at=? WHERE delivery_id=?",
+            (status, codex_turn_id,
+             None if last_error_type is None else last_error_type[:128],
+             datetime.now(UTC).isoformat(), delivery_id),
         )
         self.db.commit()
 

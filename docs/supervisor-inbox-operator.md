@@ -15,8 +15,10 @@ flowchart LR
 
 The shared inbox is an optional, fail-closed PostgreSQL adapter. The existing
 `codex-unread-supervisor serve` scheduler polls the local Codex app server and
-Cloud SQL in the same tick. It never invokes a generic LLM/provider for inbox
-content.
+Cloud SQL in the same tick. In `review` execution mode it never invokes Codex
+for task proposals. In explicitly configured `trusted` mode, a v1 task from a
+contact grant that permits unattended execution becomes a mapped Codex
+app-server thread and turn.
 
 Install the optional client dependency with `pip install -e '.[inbox]'` and
 point the DSN at a Cloud SQL Auth Proxy port or socket. Do not put credentials
@@ -27,6 +29,9 @@ export SUPERVISOR_INBOX_MODE=dry-run
 export SUPERVISOR_INBOX_DSN='postgresql://...'
 export SUPERVISOR_INBOX_INSTANCE_ID='stable-workstation-instance'
 export SUPERVISOR_INBOX_AGENT_ID='00000000-0000-0000-0000-000000000000'
+export SUPERVISOR_INBOX_EXECUTION_MODE=review
+export SUPERVISOR_INBOX_WORKSPACE_KEY=supervisor-agent
+export SUPERVISOR_INBOX_WORKSPACE=/absolute/path/to/supervisor-agent
 ```
 
 `SUPERVISOR_INBOX_SCHEMA` defaults to `public`. Poll seconds must be 5–300 and
@@ -64,6 +69,32 @@ The worker holds one process-lifetime lease. A second scheduler refuses to
 start. Expected app-server or database failures are isolated per source and the
 next tick retries; heartbeat details contain only bounded projections and error
 types, never DSNs or message bodies.
+
+## Trusted Codex execution
+
+Set `SUPERVISOR_INBOX_EXECUTION_MODE=trusted` only with an existing absolute
+recipient-owned workspace path. Automatic acceptance additionally requires the
+existing inbox canary, a Cloud SQL contact grant with
+`allow_unattended_execution=true`, and a valid `shared-inbox-task/v1` proposal
+whose logical `workspace_key` matches local configuration. Senders cannot
+select a filesystem path, model, sandbox, approval policy, or credentials.
+
+The worker persists the accepted job before calling app-server, sends
+`TASK_ACCEPTED` in the same Cloud SQL conversation, then calls `thread/start`
+and `turn/start`. It monitors the exact recorded thread without relying on the
+unavailable unread flag and sends `RESULT` or `NEEDS_HUMAN` on completion.
+Capacity limits queue accepted work; there is no conversation hop limit.
+
+`thread/start` has no documented client idempotency key. If its transport
+outcome is unknown, the run becomes visible `AMBIGUOUS` state and the worker
+does not create another thread. A known thread ID may safely continue to its
+first turn after restart. Temporary task bodies are removed from SQLite after
+the turn is durably started and never enter heartbeat or cockpit output.
+
+When the sending skill runs inside Codex, it records `CODEX_THREAD_ID` with the
+outbound Cloud SQL thread. Returned terminal messages resume that exact existing
+task when idle; active tasks defer delivery, and missing mappings never cause a
+guessed or new session.
 
 ## Durable Codex cockpit bridge
 
@@ -157,10 +188,10 @@ supervisor inbox canary --delivery-id DELIVERY_UUID \
 
 Only matching contract, adapter, database session identity, local instance,
 and handler evidence enables `supervisor inbox run-once`. Run-once claims at
-most one delivery and only uses deterministic routing. A `TASK_PROPOSAL` always
-goes to human review. Any uncertain acknowledgement, send, completion,
-recipient, or delivery identity becomes terminal `AMBIGUOUS` local state and
-is never retried automatically.
+most one delivery. A proposal goes to human review unless every trusted-mode
+gate above passes. Any uncertain acknowledgement, send, completion, recipient,
+or delivery identity becomes terminal `AMBIGUOUS` local state and is never
+retried automatically.
 
 The PostgreSQL client calls only `inbox_list_deliveries`,
 `inbox_claim_next_delivery`, `inbox_mark_received`,
@@ -188,6 +219,7 @@ uv run python .agents/skills/send-shared-inbox-task/scripts/send_task.py \
   --subject "Investigate the import" --body-file /tmp/task.txt
 ```
 
-A successful result means queued, not accepted. The recipient's supervisor
-routes every `TASK_PROPOSAL` to `NEEDS_HUMAN` until an explicit acceptance
-workflow is implemented.
+A successful send means queued, not accepted. A trusted recipient reports
+acceptance with a separate `TASK_ACCEPTED`, then later returns `RESULT` or
+`NEEDS_HUMAN`. The skill emits v1, preserves the source Codex thread
+correlation, and never treats the initial queue receipt as proof of execution.

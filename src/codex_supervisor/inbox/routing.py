@@ -13,6 +13,7 @@ class InboxRoute(StrEnum):
     CORRELATE = "CORRELATE"
     SURFACE_RESULT = "SURFACE_RESULT"
     NOT_UNDERSTOOD = "NOT_UNDERSTOOD"
+    ACCEPT_TASK = "ACCEPT_TASK"
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,8 @@ class RoutingDecision:
 
 
 def route_envelope(
-    envelope: InboxEnvelope, *, explicit_canary: bool = False
+    envelope: InboxEnvelope, *, explicit_canary: bool = False,
+    allow_task_execution: bool = False,
 ) -> RoutingDecision:
     kind = envelope.kind
     if kind is MessageKind.NOTE:
@@ -47,6 +49,13 @@ def route_envelope(
             "contact grant does not permit unattended handling",
         )
     if kind is MessageKind.TASK_PROPOSAL:
+        if allow_task_execution and envelope.allow_unattended_execution:
+            return RoutingDecision(
+                InboxRoute.ACCEPT_TASK,
+                InboxOutcome.COMPLETED,
+                "trusted task proposal accepted for local Codex execution",
+                True,
+            )
         return RoutingDecision(
             InboxRoute.HUMAN_REVIEW,
             InboxOutcome.NEEDS_HUMAN,

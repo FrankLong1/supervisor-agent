@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
                 return {"configured": False, "mode": inbox_config.mode.value}
             adapter = PostgresInboxAdapter(inbox_config.dsn, schema=inbox_config.schema)
             try:
-                service = InboxService(inbox_config, adapter, state)
+                service = InboxService(inbox_config, adapter, state, client)
                 if inbox_config.mode is InboxMode.DRY_RUN:
                     return {
                         "configured": True,

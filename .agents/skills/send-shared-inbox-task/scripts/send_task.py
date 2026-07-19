@@ -34,6 +34,9 @@ def parser() -> argparse.ArgumentParser:
     body.add_argument("--body-text")
     body.add_argument("--body-file", type=Path)
     command.add_argument("--idempotency-key")
+    command.add_argument("--workspace-key")
+    command.add_argument("--source-codex-thread-id")
+    command.add_argument("--expected-result")
     command.add_argument("--state-path", type=Path)
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--supervisor-bin")
@@ -74,13 +77,17 @@ def resolve(
     return sender_address, recipient
 
 
-def stable_key(sender: str, recipient: str, subject: str, body: str) -> str:
+def stable_key(
+    sender: str, recipient: str, subject: str, body: str,
+    workspace_key: str = "supervisor-agent",
+) -> str:
     canonical = json.dumps(
         {
             "sender": sender,
             "recipient": recipient,
             "subject": subject,
             "body": body,
+            "workspace_key": workspace_key,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -111,8 +118,20 @@ def main(argv: list[str] | None = None) -> int:
         if not subject or len(subject) > 500:
             raise ValueError("task subject must be between 1 and 500 characters")
         body = read_body(args)
+        workspace_key = (
+            args.workspace_key
+            or os.environ.get("SUPERVISOR_INBOX_WORKSPACE_KEY")
+            or "supervisor-agent"
+        ).strip()
+        if not workspace_key or len(workspace_key.encode("utf-8")) > 64:
+            raise ValueError("workspace key must be between 1 and 64 bytes")
+        source_codex_thread_id = (
+            args.source_codex_thread_id
+            or os.environ.get("CODEX_THREAD_ID")
+            or None
+        )
         key = args.idempotency_key or stable_key(
-            sender, recipient["principal"], subject, body
+            sender, recipient["principal"], subject, body, workspace_key
         )
         if not key or len(key) > 200:
             raise ValueError("idempotency key must be between 1 and 200 characters")
@@ -126,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
             "subject": subject,
             "body_bytes": len(body.encode("utf-8")),
             "idempotency_key": key,
+            "workspace_key": workspace_key,
+            "source_codex_thread_id": source_codex_thread_id,
         }
         if args.dry_run:
             print(json.dumps({"dry_run": True, **projection}, sort_keys=True))
@@ -148,7 +169,13 @@ def main(argv: list[str] | None = None) -> int:
                 body_file.name,
                 "--idempotency-key",
                 key,
+                "--workspace-key",
+                workspace_key,
             ]
+            if source_codex_thread_id:
+                command.extend(("--source-codex-thread-id", source_codex_thread_id))
+            if args.expected_result:
+                command.extend(("--expected-result", args.expected_result))
             if args.state_path:
                 command.extend(("--state-path", str(args.state_path)))
             return subprocess.run(command, check=False).returncode

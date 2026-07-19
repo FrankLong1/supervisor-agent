@@ -58,7 +58,8 @@ def safe_status_snapshot(
         blockers.append("local Codex app-server poll is unhealthy")
     elif local.get("unread_supported") is not True:
         blockers.append("authoritative Codex hasUnreadTurn signal is unavailable")
-    blockers.append("generic local Codex task mutation is disabled by supervisor policy")
+    if inbox.get("execution_mode") != "trusted":
+        blockers.append("trusted inbox Codex task execution is disabled")
     if inbox.get("ok") is not True:
         blockers.append("Cloud SQL inbox poll is unhealthy")
     elif (
@@ -101,6 +102,13 @@ def safe_status_snapshot(
             "ambiguous_count": int(inbox_status["ambiguous_count"]),
             "active_canary_evidence_count": int(
                 inbox_status["active_canary_evidence_count"]
+            ),
+            "queued_run_count": int(inbox_status["queued_run_count"]),
+            "active_run_count": int(inbox_status["active_run_count"]),
+            "completed_run_count": int(inbox_status["completed_run_count"]),
+            "ambiguous_run_count": int(inbox_status["ambiguous_run_count"]),
+            "pending_session_delivery_count": int(
+                inbox_status["pending_session_delivery_count"]
             ),
         },
         "human_review_count": human_review_count,

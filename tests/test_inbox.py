@@ -6,7 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_supervisor.inbox.config import InboxConfig, InboxMode
+from codex_supervisor.inbox.config import (
+    InboxConfig,
+    InboxExecutionMode,
+    InboxMode,
+)
 from codex_supervisor.inbox.fake import FakeInboxAdapter
 from codex_supervisor.inbox.models import (
     ClaimedEnvelopeValidationError,
@@ -25,6 +29,7 @@ from codex_supervisor.inbox.service import (
     InboxService,
 )
 from codex_supervisor.state import SupervisorState
+from codex_supervisor.models import CockpitDeliveryReceipt
 
 
 IDS = {
@@ -67,6 +72,42 @@ def envelope(
 def claim(item: InboxEnvelope) -> InboxClaim:
     now = datetime.now(UTC)
     return InboxClaim(item, "stable-instance", now, now + timedelta(seconds=120))
+
+
+class FakeCodex:
+    def __init__(self) -> None:
+        self.started_threads: list[str] = []
+        self.started_turns: list[dict[str, str]] = []
+        self.external_updates: list[dict[str, str]] = []
+        self.turn_status = "inProgress"
+        self.final_text = "Task completed successfully."
+        self.fail_thread_start = False
+
+    def start_thread(self, *, cwd: str) -> str:
+        self.started_threads.append(cwd)
+        if self.fail_thread_start:
+            raise RuntimeError("thread start ambiguous")
+        return "00000000-0000-0000-0000-000000000801"
+
+    def start_turn(self, **kwargs) -> str:
+        self.started_turns.append(dict(kwargs))
+        return "00000000-0000-0000-0000-000000000802"
+
+    def read_thread(self, thread_id: str) -> dict:
+        return {
+            "id": thread_id,
+            "turns": [{
+                "id": "00000000-0000-0000-0000-000000000802",
+                "status": self.turn_status,
+                "items": [{"text": self.final_text}],
+            }],
+        }
+
+    def send_external_update(self, **kwargs) -> CockpitDeliveryReceipt:
+        self.external_updates.append(dict(kwargs))
+        return CockpitDeliveryReceipt(
+            "00000000-0000-0000-0000-000000000803", "turn/start"
+        )
 
 
 class InboxTests(unittest.TestCase):
@@ -465,6 +506,163 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(adapter.sends[0]["sender_agent_id"], IDS["recipient"])
         self.assertEqual(adapter.sends[0]["recipient_address"], "research@alice")
         self.assertEqual(adapter.sends[0]["idempotency_key"], "skill-task:stable-key")
+        self.assertEqual(
+            adapter.sends[0]["body_json"]["format"], "shared-inbox-task/v1"
+        )
+
+    def _trusted_execution_service(
+        self, item: InboxEnvelope, codex: FakeCodex
+    ) -> tuple[InboxService, FakeInboxAdapter]:
+        adapter = FakeInboxAdapter((item,))
+        adapter.claim = claim(item)
+        config = replace(
+            self.config,
+            execution_mode=InboxExecutionMode.TRUSTED,
+            workspace_key="supervisor-agent",
+            workspace_path=self.temp.name,
+        )
+        self.state.record_inbox_canary(
+            evidence_id=CANARY_EVIDENCE_ID,
+            contract_version=adapter.contract_version,
+            adapter_identity=adapter.adapter_identity,
+            principal_identity=adapter.identity,
+            instance_id=config.instance_id,
+            handler_identity=HANDLER_IDENTITY,
+            delivery_id="canary",
+            reply_message_id="reply",
+        )
+        return InboxService(config, adapter, self.state, codex), adapter
+
+    def test_trusted_v1_task_starts_exactly_one_codex_thread_and_turn(self) -> None:
+        item = replace(
+            envelope(MessageKind.TASK_PROPOSAL, unattended=True),
+            body_text="Inspect the repository and report the result.",
+            body_json={
+                "format": "shared-inbox-task/v1",
+                "workspace_key": "supervisor-agent",
+            },
+        )
+        codex = FakeCodex()
+        service, adapter = self._trusted_execution_service(item, codex)
+        result = service.run_once()
+        run = self.state.inbox_run(item.delivery_id)
+
+        self.assertEqual(result["dispatched_runs"], 1)
+        self.assertEqual(run["status"], "RUNNING")
+        self.assertEqual(run["task_title"], "Bounded subject")
+        self.assertEqual(run["handler_address"], "helper@bob")
+        self.assertIsNone(run["task_body"])
+        self.assertEqual(codex.started_threads, [self.temp.name])
+        self.assertEqual(len(codex.started_turns), 1)
+        self.assertEqual(adapter.sends[0]["kind"], MessageKind.TASK_ACCEPTED)
+        self.assertEqual(adapter.completions[0][2], InboxOutcome.COMPLETED)
+
+    def test_completed_codex_run_sends_result_on_original_inbox_thread(self) -> None:
+        item = replace(
+            envelope(MessageKind.TASK_PROPOSAL, unattended=True),
+            body_text="Complete the bounded task.",
+            body_json={
+                "format": "shared-inbox-task/v1",
+                "workspace_key": "supervisor-agent",
+            },
+        )
+        codex = FakeCodex()
+        service, adapter = self._trusted_execution_service(item, codex)
+        service.run_once()
+        codex.turn_status = "completed"
+
+        self.assertEqual(service.monitor_runs(), 1)
+        self.assertEqual(self.state.inbox_run(item.delivery_id)["status"], "SUCCEEDED")
+        self.assertEqual(adapter.sends[-1]["kind"], MessageKind.RESULT)
+        self.assertEqual(adapter.sends[-1]["thread_id"], item.thread_id)
+        self.assertEqual(adapter.sends[-1]["body_text"], codex.final_text)
+
+    def test_correlated_result_resumes_exact_existing_codex_task(self) -> None:
+        source_thread = "00000000-0000-0000-0000-000000000701"
+        sender_adapter = FakeInboxAdapter()
+        InboxService(self.config, sender_adapter, self.state).send_task(
+            recipient_address="research@alice",
+            subject="Delegated work",
+            body_text="Do it.",
+            idempotency_key="correlated-task",
+            source_codex_thread_id=source_thread,
+        )
+        inbox_thread = sender_adapter.sends and self.state.db.execute(
+            "SELECT inbox_thread_id FROM supervisor_inbox_outbound_correlations"
+        ).fetchone()[0]
+        result_item = replace(
+            envelope(
+                MessageKind.RESULT,
+                delivery_id="00000000-0000-0000-0000-000000000711",
+            ),
+            message_id="00000000-0000-0000-0000-000000000712",
+            thread_id=str(inbox_thread),
+            body_text="Delegated work is complete.",
+        )
+        codex = FakeCodex()
+        adapter = FakeInboxAdapter((result_item,))
+        adapter.claim = claim(result_item)
+        self.state.record_inbox_canary(
+            evidence_id=CANARY_EVIDENCE_ID,
+            contract_version=adapter.contract_version,
+            adapter_identity=adapter.adapter_identity,
+            principal_identity=adapter.identity,
+            instance_id=self.config.instance_id,
+            handler_identity=HANDLER_IDENTITY,
+            delivery_id="canary",
+            reply_message_id="reply",
+        )
+        service = InboxService(self.config, adapter, self.state, codex)
+        result = service.run_once()
+
+        self.assertTrue(result["session_delivery_queued"])
+        self.assertEqual(result["session_deliveries"], 1)
+        self.assertEqual(codex.external_updates[0]["thread_id"], source_thread)
+        self.assertIn("Delegated work is complete", codex.external_updates[0]["message"])
+
+    def test_ambiguous_thread_start_is_never_retried(self) -> None:
+        item = replace(
+            envelope(MessageKind.TASK_PROPOSAL, unattended=True),
+            body_text="Run once only.",
+            body_json={
+                "format": "shared-inbox-task/v1",
+                "workspace_key": "supervisor-agent",
+            },
+        )
+        codex = FakeCodex()
+        codex.fail_thread_start = True
+        service, _adapter = self._trusted_execution_service(item, codex)
+        service.run_once()
+
+        self.assertEqual(self.state.inbox_run(item.delivery_id)["status"], "AMBIGUOUS")
+        self.assertEqual(service.dispatch_runs(), 0)
+        self.assertEqual(len(codex.started_threads), 1)
+
+    def test_restart_never_retries_interrupted_thread_creation(self) -> None:
+        delivery_id = "00000000-0000-0000-0000-000000000721"
+        self.state.accept_inbox_run(
+            delivery_id=delivery_id,
+            message_id="00000000-0000-0000-0000-000000000722",
+            inbox_thread_id="00000000-0000-0000-0000-000000000723",
+            sender_address="sender@alice",
+            workspace_key="supervisor-agent",
+            workspace_path=self.temp.name,
+            task_body="Do not duplicate.",
+            task_body_sha256="hash",
+            client_user_message_id="00000000-0000-0000-0000-000000000724",
+        )
+        self.state.update_inbox_run(delivery_id, "CREATE_REQUESTED")
+        config = replace(
+            self.config,
+            execution_mode=InboxExecutionMode.TRUSTED,
+            workspace_path=self.temp.name,
+        )
+        codex = FakeCodex()
+        service = InboxService(config, FakeInboxAdapter(), self.state, codex)
+
+        self.assertEqual(service.dispatch_runs(), 0)
+        self.assertEqual(self.state.inbox_run(delivery_id)["status"], "AMBIGUOUS")
+        self.assertEqual(codex.started_threads, [])
 
     def test_send_task_rejects_self_addressing_and_missing_sender_address(self) -> None:
         adapter = FakeInboxAdapter()

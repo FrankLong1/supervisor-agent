@@ -69,6 +69,33 @@ class MessageKind(StrEnum):
     NOT_UNDERSTOOD = "NOT_UNDERSTOOD"
 
 
+@dataclass(frozen=True)
+class InboxTaskPayload:
+    workspace_key: str
+    source_codex_thread_id: str | None = None
+    expected_result: str | None = None
+
+    @classmethod
+    def from_envelope(cls, envelope: "InboxEnvelope") -> "InboxTaskPayload":
+        body = envelope.body_json
+        if body.get("format") != "shared-inbox-task/v1":
+            raise InboxValidationError("task proposal is not shared-inbox-task/v1")
+        workspace_key = body.get("workspace_key")
+        if not isinstance(workspace_key, str) or not workspace_key.strip():
+            raise InboxValidationError("task proposal has no workspace_key")
+        if len(workspace_key.encode("utf-8")) > 64:
+            raise InboxValidationError("task proposal workspace_key is too long")
+        source = body.get("source_codex_thread_id")
+        if source is not None:
+            source = _uuid(source, "source_codex_thread_id")
+        expected = body.get("expected_result")
+        if expected is not None:
+            expected = _text(expected, "expected_result", 2048)
+        if not envelope.body_text.strip():
+            raise InboxValidationError("task proposal body is empty")
+        return cls(workspace_key.strip(), source, expected)
+
+
 class InboxOutcome(StrEnum):
     RECEIVED_ONLY = "RECEIVED_ONLY"
     COMPLETED = "COMPLETED"

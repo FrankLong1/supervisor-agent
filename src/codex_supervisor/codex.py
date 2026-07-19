@@ -134,6 +134,65 @@ class AppServerClient:
             ).get("data", [])
         )
 
+    def start_thread(self, *, cwd: str) -> str:
+        result = self.request("thread/start", {"cwd": cwd})
+        thread = result.get("thread")
+        thread_id = thread.get("id") if isinstance(thread, dict) else None
+        if not thread_id:
+            raise AppServerError("thread/start returned no thread ID")
+        return str(thread_id)
+
+    def start_turn(
+        self, *, thread_id: str, message: str,
+        client_user_message_id: str,
+    ) -> str:
+        result = self.request(
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "clientUserMessageId": client_user_message_id,
+                "input": [{"type": "text", "text": message}],
+            },
+        )
+        turn_id = self._turn_id(result)
+        if not turn_id:
+            raise AppServerError("turn/start returned no turn ID")
+        return turn_id
+
+    def read_thread(self, thread_id: str) -> dict[str, Any]:
+        thread = self.request(
+            "thread/read", {"threadId": thread_id, "includeTurns": True}
+        ).get("thread")
+        if not isinstance(thread, dict) or thread.get("id") != thread_id:
+            raise AppServerError("thread/read returned the wrong thread")
+        return thread
+
+    def send_external_update(
+        self, *, thread_id: str, message: str, client_message_id: str,
+    ) -> CockpitDeliveryReceipt:
+        """Queue a new turn only when the exact mapped task is idle."""
+        matches = [
+            thread for thread in self.list_unarchived_threads()
+            if thread.get("id") == thread_id
+        ]
+        if len(matches) != 1:
+            raise AppServerError("mapped task is not exactly one unarchived task")
+        status = matches[0].get("status")
+        status_type = status.get("type") if isinstance(status, dict) else status
+        if status_type == "active":
+            return CockpitDeliveryReceipt(
+                None, "deferred", delivered=False, reason="task_active"
+            )
+        if status_type != "idle":
+            raise AppServerError("mapped task is neither idle nor active")
+        self.request("thread/resume", {"threadId": thread_id})
+        turn_id = self.start_turn(
+            thread_id=thread_id,
+            message=message,
+            client_user_message_id=client_message_id,
+        )
+        return CockpitDeliveryReceipt(turn_id, "turn/start")
+
     @staticmethod
     def _turn_id(result: dict[str, Any]) -> str | None:
         turn = result.get("turn")

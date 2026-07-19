@@ -91,7 +91,7 @@ class CockpitTests(unittest.TestCase):
             snapshot["mutation_blockers"],
         )
         self.assertIn(
-            "generic local Codex task mutation is disabled by supervisor policy",
+            "trusted inbox Codex task execution is disabled",
             snapshot["mutation_blockers"],
         )
         self.assertIn("not a human-authored message", prompt)
@@ -162,6 +162,33 @@ class StubAppServerClient(AppServerClient):
 
 
 class AppServerCockpitTests(unittest.TestCase):
+    def test_active_mapped_task_defers_external_result(self) -> None:
+        client = StubAppServerClient(
+            [{"id": THREAD_ID, "status": {"type": "active"}}]
+        )
+        receipt = client.send_external_update(
+            thread_id=THREAD_ID,
+            message="correlated result",
+            client_message_id="message-1",
+        )
+        self.assertFalse(receipt.delivered)
+        self.assertEqual(receipt.reason, "task_active")
+        self.assertEqual(client.requests, [])
+
+    def test_idle_mapped_task_resumes_for_external_result(self) -> None:
+        client = StubAppServerClient(
+            [{"id": THREAD_ID, "status": {"type": "idle"}}]
+        )
+        receipt = client.send_external_update(
+            thread_id=THREAD_ID,
+            message="correlated result",
+            client_message_id="message-1",
+        )
+        self.assertEqual(receipt.delivery_id, "new-turn")
+        self.assertEqual(
+            [method for method, _ in client.requests], ["thread/resume", "turn/start"]
+        )
+
     def test_active_cockpit_defers_without_mutating_the_turn(self) -> None:
         client = StubAppServerClient(
             [{"id": THREAD_ID, "name": "SUPERVISOR AGENT", "status": {"type": "active"}}],

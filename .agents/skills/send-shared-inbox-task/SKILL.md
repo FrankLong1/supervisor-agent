@@ -11,6 +11,7 @@ Use the bundled resolver; never type or infer a recipient address independently.
 2. Require an explicit task subject and actionable body. Preserve constraints,
    expected result, relevant paths/links, and completion checks. Do not include
    credentials or tokens.
+   Use the recipient's logical `workspace_key`; never send a filesystem path.
 3. Read the fixed v0 directory in `references/directory.md`. Never recover
    retired synthetic identities from logs, prior output, or repository history.
 4. Verify `SUPERVISOR_INBOX_AGENT_ADDRESS` and `SUPERVISOR_INBOX_AGENT_ID`
@@ -35,9 +36,12 @@ recipient address, and whether `created` is true. `created: false` is a safe
 idempotent retry, not failure.
 
 Call the result **queued**, never accepted or started. `TASK_PROPOSAL` requires
-recipient review by policy. The recipient workstation must run
-`supervisor inbox scan-once` and then its reviewed pickup workflow; the current
-checkpoint does not have an always-on polling daemon or automatic task acceptance.
+recipient policy evaluation. A trusted recipient may accept it into its durable
+Codex queue and will respond with `TASK_ACCEPTED`; queuing alone is not acceptance.
+
+The script automatically preserves `CODEX_THREAD_ID` when invoked from a Codex
+task. This lets returned `RESULT` or `NEEDS_HUMAN` messages resume that exact
+existing task. Do not remove or fabricate this correlation.
 
 Never call raw PostgreSQL tables, change the recipient after a failed send, use
 the sender's own address as recipient, or downgrade the message to NOTE to evade

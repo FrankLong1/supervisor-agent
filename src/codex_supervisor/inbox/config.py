@@ -16,6 +16,11 @@ class InboxMode(StrEnum):
     POLL = "poll"
 
 
+class InboxExecutionMode(StrEnum):
+    REVIEW = "review"
+    TRUSTED = "trusted"
+
+
 @dataclass(frozen=True)
 class InboxConfig:
     mode: InboxMode = InboxMode.DISABLED
@@ -26,6 +31,10 @@ class InboxConfig:
     agent_id: str | None = None
     agent_address: str | None = None
     schema: str = "public"
+    execution_mode: InboxExecutionMode = InboxExecutionMode.REVIEW
+    workspace_key: str = "supervisor-agent"
+    workspace_path: str | None = None
+    max_active_runs: int = 2
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "InboxConfig":
@@ -34,6 +43,12 @@ class InboxConfig:
             mode = InboxMode(source.get("SUPERVISOR_INBOX_MODE", "disabled"))
             poll = int(source.get("SUPERVISOR_INBOX_POLL_SECONDS", "30"))
             claim = int(source.get("SUPERVISOR_INBOX_CLAIM_SECONDS", "120"))
+            execution_mode = InboxExecutionMode(
+                source.get("SUPERVISOR_INBOX_EXECUTION_MODE", "review")
+            )
+            max_active_runs = int(
+                source.get("SUPERVISOR_INBOX_MAX_ACTIVE_RUNS", "2")
+            )
         except (ValueError, TypeError) as error:
             raise ValueError("malformed supervisor inbox configuration") from error
         config = cls(
@@ -45,6 +60,12 @@ class InboxConfig:
             agent_id=source.get("SUPERVISOR_INBOX_AGENT_ID") or None,
             agent_address=source.get("SUPERVISOR_INBOX_AGENT_ADDRESS") or None,
             schema=source.get("SUPERVISOR_INBOX_SCHEMA", "public"),
+            execution_mode=execution_mode,
+            workspace_key=source.get(
+                "SUPERVISOR_INBOX_WORKSPACE_KEY", "supervisor-agent"
+            ),
+            workspace_path=source.get("SUPERVISOR_INBOX_WORKSPACE") or None,
+            max_active_runs=max_active_runs,
         )
         config.validate()
         return config
@@ -54,6 +75,12 @@ class InboxConfig:
             raise ValueError("SUPERVISOR_INBOX_POLL_SECONDS must be between 5 and 300")
         if not 5 <= self.claim_seconds <= 900:
             raise ValueError("SUPERVISOR_INBOX_CLAIM_SECONDS must be between 5 and 900")
+        if not 1 <= self.max_active_runs <= 16:
+            raise ValueError("SUPERVISOR_INBOX_MAX_ACTIVE_RUNS must be between 1 and 16")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.workspace_key):
+            raise ValueError("SUPERVISOR_INBOX_WORKSPACE_KEY is invalid")
+        if self.workspace_path is not None and not os.path.isabs(self.workspace_path):
+            raise ValueError("SUPERVISOR_INBOX_WORKSPACE must be an absolute path")
         if self.mode is InboxMode.DISABLED:
             return
         if not self.dsn or not self.instance_id or not self.instance_id.strip():
@@ -69,6 +96,13 @@ class InboxConfig:
             raise ValueError("SUPERVISOR_INBOX_AGENT_ADDRESS is too long")
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.schema):
             raise ValueError("SUPERVISOR_INBOX_SCHEMA must be a PostgreSQL identifier")
+        if self.execution_mode is InboxExecutionMode.TRUSTED:
+            if self.mode not in {InboxMode.ONE_SHOT, InboxMode.POLL}:
+                raise ValueError("trusted inbox execution requires one-shot or poll mode")
+            if not self.workspace_path or not os.path.isdir(self.workspace_path):
+                raise ValueError(
+                    "trusted inbox execution requires an existing SUPERVISOR_INBOX_WORKSPACE"
+                )
 
     def require_live_identity(self) -> None:
         if self.mode not in {InboxMode.ONE_SHOT, InboxMode.POLL}:
