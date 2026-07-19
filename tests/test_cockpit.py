@@ -189,6 +189,20 @@ class AppServerCockpitTests(unittest.TestCase):
             [method for method, _ in client.requests], ["thread/resume", "turn/start"]
         )
 
+    def test_unloaded_mapped_task_resumes_for_external_result(self) -> None:
+        client = StubAppServerClient(
+            [{"id": THREAD_ID, "status": {"type": "notLoaded"}}]
+        )
+        receipt = client.send_external_update(
+            thread_id=THREAD_ID,
+            message="correlated result",
+            client_message_id="message-1",
+        )
+        self.assertEqual(receipt.delivery_id, "new-turn")
+        self.assertEqual(
+            [method for method, _ in client.requests], ["thread/resume", "turn/start"]
+        )
+
     def test_active_cockpit_defers_without_mutating_the_turn(self) -> None:
         client = StubAppServerClient(
             [{"id": THREAD_ID, "name": "SUPERVISOR AGENT", "status": {"type": "active"}}],
@@ -221,6 +235,28 @@ class AppServerCockpitTests(unittest.TestCase):
             [method for method, _ in client.requests], ["thread/resume", "turn/start"]
         )
         self.assertEqual(client.requests[-1][1]["effort"], "xhigh")
+
+    def test_unloaded_cockpit_resumes_then_starts_a_turn(self) -> None:
+        client = StubAppServerClient(
+            [
+                {
+                    "id": THREAD_ID,
+                    "name": "SUPERVISOR AGENT",
+                    "status": {"type": "notLoaded"},
+                }
+            ]
+        )
+        receipt = client.send_cockpit_update(
+            thread_id=THREAD_ID,
+            expected_title="SUPERVISOR AGENT",
+            message="automated",
+            client_message_id="message-1",
+            reasoning_effort="xhigh",
+        )
+        self.assertEqual(receipt.delivery_id, "new-turn")
+        self.assertEqual(
+            [method for method, _ in client.requests], ["thread/resume", "turn/start"]
+        )
 
     def test_title_mismatch_fails_before_any_mutation(self) -> None:
         client = StubAppServerClient(

@@ -21,6 +21,9 @@ class AppServerError(RuntimeError):
     pass
 
 
+DORMANT_THREAD_STATES = frozenset({"idle", "notLoaded"})
+
+
 class AppServerClient:
     """App-server client using its documented local WebSocket transport."""
     unread_supported = False
@@ -177,14 +180,13 @@ class AppServerClient:
         ]
         if len(matches) != 1:
             raise AppServerError("mapped task is not exactly one unarchived task")
-        status = matches[0].get("status")
-        status_type = status.get("type") if isinstance(status, dict) else status
+        status_type = self._thread_status_type(matches[0])
         if status_type == "active":
             return CockpitDeliveryReceipt(
                 None, "deferred", delivered=False, reason="task_active"
             )
-        if status_type != "idle":
-            raise AppServerError("mapped task is neither idle nor active")
+        if status_type not in DORMANT_THREAD_STATES:
+            raise AppServerError("mapped task is neither dormant nor active")
         self.request("thread/resume", {"threadId": thread_id})
         turn_id = self.start_turn(
             thread_id=thread_id,
@@ -199,6 +201,13 @@ class AppServerClient:
         value = turn.get("id") if isinstance(turn, dict) else None
         value = value or result.get("turnId") or result.get("id")
         return str(value) if value else None
+
+    @staticmethod
+    def _thread_status_type(thread: dict[str, Any]) -> str | None:
+        status = thread.get("status")
+        if isinstance(status, dict):
+            status = status.get("type")
+        return status if isinstance(status, str) else None
 
     def send_cockpit_update(
         self,
@@ -220,8 +229,7 @@ class AppServerClient:
         thread = matches[0]
         if thread.get("name") != expected_title:
             raise AppServerError("configured cockpit title does not match")
-        status = thread.get("status")
-        status_type = status.get("type") if isinstance(status, dict) else None
+        status_type = self._thread_status_type(thread)
         input_items = [{"type": "text", "text": message}]
         if status_type == "active":
             return CockpitDeliveryReceipt(
@@ -230,8 +238,8 @@ class AppServerClient:
                 delivered=False,
                 reason="cockpit_active",
             )
-        if status_type != "idle":
-            raise AppServerError("configured cockpit is neither idle nor active")
+        if status_type not in DORMANT_THREAD_STATES:
+            raise AppServerError("configured cockpit is neither dormant nor active")
         self.request("thread/resume", {"threadId": thread_id})
         result = self.request(
             "turn/start",

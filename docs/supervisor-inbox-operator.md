@@ -93,8 +93,8 @@ the turn is durably started and never enter heartbeat or cockpit output.
 
 When the sending skill runs inside Codex, it records `CODEX_THREAD_ID` with the
 outbound Cloud SQL thread. Returned terminal messages resume that exact existing
-task when idle; active tasks defer delivery, and missing mappings never cause a
-guessed or new session.
+task when idle or unloaded; active tasks defer delivery, and missing mappings
+never cause a guessed or new session.
 
 ## Durable Codex cockpit bridge
 
@@ -117,16 +117,16 @@ status projection changes. It does not start another scheduler.
 
 The bridge uses the documented local app-server protocol. It verifies that the
 configured UUID identifies exactly one unarchived task with the expected title,
-then uses `thread/resume` plus `turn/start` with `xhigh` reasoning for an idle
-task. An active cockpit is never steered or interrupted; the newest status edge
-remains pending and is delivered after the cockpit becomes idle. A deterministic
+then uses `thread/resume` plus `turn/start` with `xhigh` reasoning for an idle or
+unloaded task. An active cockpit is never steered or interrupted; the newest
+status edge remains pending until the cockpit becomes dormant. A deterministic
 `clientUserMessageId` and the local SQLite audit table make retries idempotent
 and visible. A title mismatch, missing/archived task, unknown task state, or
 app-server error fails closed and records only the exception type.
 
 The worker remains the cheap, durable wake listener. When no actionable local
 task is established and the Cloud SQL inbox is empty, the cockpit finishes its
-turn and stands down as an idle task. A later status edge, including new Cloud
+turn and stands down as a dormant task. A later status edge, including new Cloud
 SQL inbox work, starts a new cockpit turn; unchanged 30-second polls do not.
 
 Cockpit prompts are explicitly labeled as automated and contain only bounded
