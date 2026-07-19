@@ -19,13 +19,13 @@ This package provides two deliberately small pieces:
 2. `supervisor scan-once` performs one explicit, read-only analysis of Codex
    tasks that are both idle and marked unread.
 
-## Goal-mode skill MVP
+## Supervisor skill MVP
 
 For manually initiated autonomous work, invoke the repo-scoped skill from a
 Codex task:
 
 ```text
-$run-supervised-goal Own this task through implementation and verification.
+$supervisor Own this task through implementation and verification.
 ```
 
 The skill creates or continues an explicit Codex goal and drives it through

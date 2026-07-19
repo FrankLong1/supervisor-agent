@@ -5,16 +5,16 @@ import unittest
 
 
 SKILL_DIR = (
-    Path(__file__).parents[1] / ".agents/skills/run-supervised-goal"
+    Path(__file__).parents[1] / ".agents/skills/supervisor"
 )
 
 
-class RunSupervisedGoalSkillTests(unittest.TestCase):
+class SupervisorSkillTests(unittest.TestCase):
     def test_skill_declares_explicit_goal_lifecycle(self) -> None:
         content = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
 
-        self.assertIn("name: run-supervised-goal", content)
-        self.assertIn("$run-supervised-goal", content)
+        self.assertIn("name: supervisor", content)
+        self.assertIn("$supervisor", content)
         self.assertNotIn("TODO", content)
         self.assertLess(content.index("`get_goal`"), content.index("`create_goal`"))
         self.assertIn("Set `token_budget` only when the user explicitly", content)
@@ -26,7 +26,7 @@ class RunSupervisedGoalSkillTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("$run-supervised-goal", metadata)
+        self.assertIn("$supervisor", metadata)
         self.assertIn("allow_implicit_invocation: false", metadata)
 
 
