@@ -232,11 +232,6 @@ def session_matches_provider(session: Session) -> bool:
     )
 
 
-# Compatibility name used by existing callers and tests.
-def session_matches_process(session: Session) -> bool:
-    return session_matches_provider(session)
-
-
 class Manager:
     def __init__(self, store: ManagerStore):
         self.store = store

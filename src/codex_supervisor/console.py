@@ -118,16 +118,21 @@ def serve(state_path: Path, socket_path: Path, port: int, open_browser: bool = F
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'")
                 self.send_header("Content-Length", str(len(STYLESHEET)))
-                self.end_headers(); self.wfile.write(STYLESHEET); return
+                self.end_headers()
+                self.wfile.write(STYLESHEET)
+                return
             if self.path not in {"/", "/index.html"}:
-                self.send_error(404); return
+                self.send_error(404)
+                return
             content = render_html(state_path, socket_path).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'")
             self.send_header("Content-Length", str(len(content)))
-            self.end_headers(); self.wfile.write(content)
+            self.end_headers()
+            self.wfile.write(content)
+
         def log_message(self, _format: str, *_args) -> None:
             return
 

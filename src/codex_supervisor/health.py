@@ -5,7 +5,6 @@ import os
 import sqlite3
 import stat
 import subprocess
-import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -142,16 +141,3 @@ def exit_code(report_data: dict[str, object], strict: bool) -> int:
     if strict and status != "ok":
         return 1
     return 0
-
-
-def serve_heartbeat_only(state_path: Path, interval: float, stop_requested) -> None:
-    """Keep service liveness observable until a reviewed production adapter exists.
-
-    This intentionally does not call Supervisor.run_once: the repository has no
-    verified unread inventory or production Claude/Fable adapter to invoke.
-    """
-    while not stop_requested():
-        write_heartbeat(state_path, result="ok", interval=interval, detail="scheduler ready; scan adapter is intentionally disabled")
-        deadline = time.monotonic() + interval
-        while not stop_requested() and time.monotonic() < deadline:
-            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
