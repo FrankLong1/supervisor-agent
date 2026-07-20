@@ -29,6 +29,32 @@ class SupervisorSkillModeTests(unittest.TestCase):
         self.assertIn("$supervisor-skill-mode", metadata)
         self.assertIn("allow_implicit_invocation: false", metadata)
 
+    def test_skill_owns_pr_feedback_loop_until_current_revision_is_clean(self) -> None:
+        content = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+
+        self.assertIn("thread-aware review state", content)
+        self.assertIn("resolve each addressed thread", content)
+        self.assertIn("repository policy requires review", content)
+        self.assertIn("fresh review after material changes", content)
+        self.assertIn("current head commit", content)
+        self.assertIn("queued or pending", content)
+        self.assertIn("recurring-monitor mechanism", content)
+        self.assertIn("check every 30-60 seconds", content)
+        self.assertIn("unresolved thread IDs", content)
+        self.assertIn("After an interruption", content)
+        self.assertIn("closing a superseded pull request", content)
+        self.assertIn("Do not merge unless", content)
+        self.assertIn("authorized merging", content)
+        self.assertIn("review covers the current revision", content)
+
+    def test_pr_supervision_preserves_skill_first_boundary(self) -> None:
+        content = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+
+        self.assertIn("active, explicitly invoked goal", content)
+        self.assertIn("not start a background service", content)
+        self.assertIn("poll an inbox", content)
+        self.assertIn("create a separate Codex task", content)
+
 
 if __name__ == "__main__":
     unittest.main()
