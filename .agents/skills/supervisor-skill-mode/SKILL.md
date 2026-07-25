@@ -53,13 +53,55 @@ stop merely to restate the objective or present a plan.
 Do not stop at analysis, a proposal, a diff, a preview, a passing narrow test,
 or a "ready to" handoff when the goal requires a completed and verified result.
 
+## Supervise Pull Requests and Other Asynchronous Gates
+
+When completing the goal creates or updates a pull request with required checks
+or review, keep that feedback loop inside the unfinished goal:
+
+1. Read required checks and thread-aware review state for the current head
+   commit. Do not infer thread resolution from a flat comment list.
+2. Classify every unresolved thread as actionable, duplicate, obsolete,
+   contradictory, or requiring human authority. Fix all in-scope actionable
+   findings and add regression tests that prove the intended behavior.
+3. For duplicate or contradictory feedback, establish one explicit behavioral
+   rule, test it, and explain the resolution on the pull request. Do not silently
+   choose between conflicting reviewer requests.
+4. When pull-request maintenance is authorized by the user's mandate, push the
+   verified fixes, reply with the evidence, and resolve each addressed thread.
+   Never resolve an unaddressed or uncertain thread merely to make the count
+   reach zero.
+5. When repository policy requires review or the user requested it, request a
+   fresh review after material changes. Confirm that its result and all required
+   checks apply to the current head commit; a review or check on an older commit
+   is not completion evidence.
+6. While checks or reviews are queued or pending, use the available bounded
+   wait or recurring-monitor mechanism. Prefer native notifications; otherwise
+   check every 30-60 seconds while a result is expected soon and back off to
+   2-5 minutes during a long external wait. Before yielding, preserve the head
+   commit, pending gates, unresolved thread IDs, and next check in goal or plan
+   state. After an interruption, rediscover authoritative state instead of
+   assuming the prior attempt completed. Avoid tight polling loops.
+7. Repeat the fix, verify, publish, resolve, and rereview cycle until required
+   checks pass, no actionable unresolved review threads remain, and any required
+   review covers the current revision. Only then perform authorized cleanup such
+   as closing a superseded pull request.
+
+Treat queued CI as pending, not passing. Treat a required reviewer that has not
+reported on the current revision as unverified, not clean. Do not merge unless
+the user authorized merging, and honor an explicit hold even after every gate
+passes.
+
+This supervision remains inside the active, explicitly invoked goal. It does
+not start a background service, poll an inbox, or create a separate Codex task.
+
 ## Close the Goal
 
 Before changing goal status, call `get_goal` and compare the current result
 with the objective's completion criteria.
 
 - Call `update_goal` with `complete` only when the outcome is achieved, its
-  required checks pass, and no required work remains.
+  required checks pass, asynchronous review obligations are satisfied, and no
+  required work remains.
 - Call `update_goal` with `blocked` only when the same genuine blocker has
   prevented meaningful progress for at least three consecutive goal turns and
   user input or external state is required.

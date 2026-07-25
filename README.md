@@ -29,10 +29,18 @@ $supervisor-skill-mode Own this task through implementation and verification.
 ```
 
 The skill creates or continues an explicit Codex goal and drives it through
-verified completion. It is intentionally instruction-only and cannot wake a
-machine, poll the shared inbox, or create a separate Codex task from an
-external message. Those transport and recovery concerns remain owned by the
-supervisor runtime.
+verified completion. For pull-request work, that includes monitoring queued
+checks and reviews, fixing actionable feedback, resolving addressed review
+threads, and requesting fresh review of material changes when review is required
+or requested. A queued check or a required review of an older commit is not
+treated as success, and an explicit no-merge hold remains in force after the
+gates pass.
+
+The skill is intentionally instruction-only and cannot wake a machine, poll
+the shared inbox, or create a separate Codex task from an external message.
+While a goal is active it uses available bounded wait or recurring-monitor
+mechanisms; transport and recovery concerns outside that goal remain owned by
+the supervisor runtime.
 
 The unread-task analysis remains read-only. Separately, the shared Cloud SQL
 inbox can accept explicitly trusted v1 proposals into new mapped Codex
