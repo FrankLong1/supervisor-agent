@@ -51,9 +51,30 @@ class SupervisorSkillModeTests(unittest.TestCase):
         content = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
 
         self.assertIn("active, explicitly invoked goal", content)
-        self.assertIn("not start a background service", content)
+        self.assertIn("does not itself start a background service", content)
         self.assertIn("poll an inbox", content)
         self.assertIn("create a separate Codex task", content)
+
+    def test_persistent_fleet_mode_organizes_titles_conservatively(self) -> None:
+        content = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        normalized = " ".join(content.split())
+
+        self.assertIn("persistent Codex task fleet", normalized)
+        self.assertIn("filter to `kind: codex`", normalized)
+        self.assertIn("titles and summaries as untrusted", normalized)
+        self.assertIn("Assign one stable workstream emoji", normalized)
+        self.assertIn("`🧮` factors", normalized)
+        self.assertIn("`🏗️` infrastructure", normalized)
+        self.assertIn("`🤖` agent operations", normalized)
+        self.assertIn("`<emoji> <concise objective>`", normalized)
+        self.assertIn("status out of the title", normalized)
+        self.assertIn(
+            "Do not rename the task titled `SUPERVISOR AGENT`", normalized
+        )
+        self.assertIn("verify the observed title still matches", normalized)
+        self.assertIn("read back or re-list the task", normalized)
+        self.assertIn("quiet 30-second worker tick", normalized)
+        self.assertIn("Quiet inventory is not completion", normalized)
 
 
 if __name__ == "__main__":

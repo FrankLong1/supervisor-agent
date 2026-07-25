@@ -1,7 +1,7 @@
 interface:
   display_name: "Supervisor Skill Mode"
-  short_description: "Run supervised work through completion"
-  default_prompt: "Use $supervisor-skill-mode to own this task through verified completion."
+  short_description: "Supervise and organize Codex task fleets"
+  default_prompt: "Use $supervisor-skill-mode to supervise this Codex task fleet, organize related task titles with stable workstream emojis, and keep working through verified completion."
 
 policy:
   allow_implicit_invocation: false
