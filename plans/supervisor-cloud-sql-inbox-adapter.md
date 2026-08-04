@@ -16,7 +16,7 @@ flowchart LR
 ## Status
 
 Ready for implementation in parallel with
-[cloud-sql-agent-inbox-v0.md](cloud-sql-agent-inbox-v0.md). This track consumes
+[cloud-sql-agent-inbox-v0.md](https://github.com/FrankLong1/supervisor-agent/issues/5). This track consumes
 the stored-function contract defined there and must not invent a conflicting
 schema or bypass it with raw table access.
 
